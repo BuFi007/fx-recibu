@@ -1,0 +1,26 @@
+{
+  "chainId": 5042002,
+  "network": "arc-testnet",
+  "deployedAt": "2026-07-02",
+  "deployer": "0x0646FFe11b9aBcE0054Ce6F73025F06F3E91eC69",
+  "admin": "0x0646FFe11b9aBcE0054Ce6F73025F06F3E91eC69",
+  "hsmSigner": "0xcA02b2f2f0eDe8281af6EE94A0f89c4Ba1b57445",
+  "usdc": "0x3600000000000000000000000000000000000000",
+  "arcMemo": "0x5294E9927c3306DcBaDb03fe70b92e01cCede505",
+  "contracts": {
+    "BUFIIdentityRegistry": "0x63e80E438cFd3727ec8E9536FE04281C1FA9bFb7",
+    "BUFIReputationRegistry": "0xA37012Bf88E4A61B8D6968D0445173048d5Cc27F",
+    "BUAttestation": "0x9674aDB5e843737eC11B2A2B5166b0d06AdD8505",
+    "WorkspaceTierRegistry": "0x1899Ea3A876Fd7CbbE5144b21EEcBcA4F1C3E0D9",
+    "InvoiceShelf": "0x787B141A8278D44bF1A514805f8EB6a4567DC464",
+    "BUFIOracleSenior": "0xe80c7e5613D8886d1EE9AC12db011eE435927725",
+    "BUFIOracleMezz": "0x1998cFAdc1A84Fdb1168480bcB2688cE6a625411",
+    "BUFIOracleJunior": "0x5F6964026b1a3E390B957D757Af8922aE8F3925C",
+    "WorkspaceOperatingReserve": "0xFA71acC83CF15dd919aaB399e74976b982B84FDf",
+    "ReceivableEscrow": "0xd527bf1d048802402720aE3a3349666bf0f5B189",
+    "InvoiceMemoRouter": "0x9d0442f78604b9524bF2B17373ba9fB07dF4e000",
+    "InvoiceSettlement": "0x2060060E10d529039F4120C8bAa49D1BB258962D"
+  },
+  "liveSmoke": "DEFAULT_ADMIN rotated to admin (boot renounced); BUAttestation holds ATTESTOR_ROLE on the reputation registry",
+  "notes": "40 txs, 13.5M gas. HSM_SIGNER = keeper EOA until a real HSM key is provisioned (rotatable via SIGNER_ADMIN_ROLE). Oracle order per Deploy.s.sol: A=senior, B=mezz, C=junior."
+}

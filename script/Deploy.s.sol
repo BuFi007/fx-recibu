@@ -53,7 +53,7 @@ contract Deploy is Script {
         address hsmSigner = vm.envAddress("HSM_SIGNER");
         uint256 pk = vm.envUint("DEPLOYER_PRIVATE_KEY");
         vm.startBroadcast(pk);
-        d = deploy(IERC20(usdc), admin, hsmSigner);
+        d = deploy(IERC20(usdc), admin, hsmSigner, vm.addr(pk));
         vm.stopBroadcast();
         _log(d);
     }
@@ -63,7 +63,13 @@ contract Deploy is Script {
     ///      wire inter-contract roles, then hands DEFAULT_ADMIN + operational roles to the
     ///      real `admin` and renounces its own — the deploy contract holds no power after.
     function deploy(IERC20 usdc, address admin, address hsmSigner) public returns (Deployment memory d) {
-        address boot = address(this);
+        return deploy(usdc, admin, hsmSigner, address(this)); // tests: the script contract boots
+    }
+
+    function deploy(IERC20 usdc, address admin, address hsmSigner, address boot)
+        public
+        returns (Deployment memory d)
+    {
         // ── identity + reputation + attestation (M1) ──
         d.identity = new BUFIIdentityRegistry(boot);
         d.reputation = new BUFIReputationRegistry(boot, IBUFIIdentityRegistry(address(d.identity)));
@@ -89,7 +95,7 @@ contract Deploy is Script {
         d.settlement = new InvoiceSettlement(usdc, IInvoiceShelf(address(d.shelf)), d.escrow, boot);
 
         _wireRoles(d);
-        _handoff(d, admin);
+        _handoff(d, admin, boot);
     }
 
     /// @dev inter-contract role grants (deploy contract is admin here).
@@ -109,7 +115,7 @@ contract Deploy is Script {
     ///      In prod the admin is a multisig; it later splits SERVICER/OPS/KEEPER to service
     ///      accounts + ops multisig (SPEC §8.2/§8.3). ISSUER also stays admin-held for the
     ///      KYB service; ATTESTOR is via BUAttestation only.
-    function _handoff(Deployment memory d, address admin) internal {
+    function _handoff(Deployment memory d, address admin, address boot) internal {
         // operational roles the admin needs
         d.identity.grantRole(d.identity.ISSUER_ROLE(), admin);
         d.attestation.grantRole(d.attestation.SIGNER_ADMIN_ROLE(), admin);
@@ -122,23 +128,23 @@ contract Deploy is Script {
         d.oracleC.grantRole(d.oracleC.OPS_ROLE(), admin);
 
         // transfer DEFAULT_ADMIN to the real admin, then renounce boot's
-        _rotateAdmin(d.identity, admin);
-        _rotateAdmin(d.reputation, admin);
-        _rotateAdmin(d.attestation, admin);
-        _rotateAdmin(d.shelf, admin);
-        _rotateAdmin(d.reserve, admin);
-        _rotateAdmin(d.escrow, admin);
-        _rotateAdmin(d.settlement, admin);
-        _rotateAdmin(d.oracleA, admin);
-        _rotateAdmin(d.oracleB, admin);
-        _rotateAdmin(d.oracleC, admin);
+        _rotateAdmin(d.identity, admin, boot);
+        _rotateAdmin(d.reputation, admin, boot);
+        _rotateAdmin(d.attestation, admin, boot);
+        _rotateAdmin(d.shelf, admin, boot);
+        _rotateAdmin(d.reserve, admin, boot);
+        _rotateAdmin(d.escrow, admin, boot);
+        _rotateAdmin(d.settlement, admin, boot);
+        _rotateAdmin(d.oracleA, admin, boot);
+        _rotateAdmin(d.oracleB, admin, boot);
+        _rotateAdmin(d.oracleC, admin, boot);
     }
 
     /// @dev grant DEFAULT_ADMIN to the real admin, renounce the boot contract's.
-    function _rotateAdmin(IAccessControl ac, address admin) internal {
+    function _rotateAdmin(IAccessControl ac, address admin, address boot) internal {
         bytes32 da = 0x00; // DEFAULT_ADMIN_ROLE
         ac.grantRole(da, admin);
-        ac.renounceRole(da, address(this));
+        if (admin != boot) ac.renounceRole(da, boot);
     }
 
     function _log(Deployment memory d) internal pure {
