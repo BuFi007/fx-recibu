@@ -110,9 +110,10 @@ contract InvoiceShelfTest is Test {
         assertEq(shelf.BINV_TOKEN().ownerOf(id), sellerOwner);
         assertEq(shelf.outstandingOf(seller), ADVANCE);
         assertEq(shelf.debtorOutstandingOf(seller, debtor), ADVANCE);
-        // no pair history → junior tranche funds it
-        assertEq(shelf.tranchePrincipal(2), ADVANCE);
-        assertEq(shelf.trancheLiquid(2), 1_000_000e6 - ADVANCE);
+        // shared pool: cash deployed, principal booked, junior tagged as first-loss layer
+        assertEq(shelf.totalPrincipal(), ADVANCE);
+        assertEq(shelf.totalLiquid(), 3_000_000e6 - ADVANCE);
+        // NAV basis unchanged by lending (advance is a par receivable): junior still whole
         assertEq(shelf.trancheAssets(2), 1_000_000e6);
     }
 
@@ -161,8 +162,8 @@ contract InvoiceShelfTest is Test {
 
         assertEq(usdc.balanceOf(sellerOwner) - sellerBal, HOLDBACK, "holdback released on settle");
         assertEq(shelf.outstandingOf(seller), 0);
-        assertEq(shelf.trancheLiquid(2), 1_000_000e6, "tranche made whole");
-        assertEq(shelf.tranchePrincipal(2), 0);
+        assertEq(shelf.totalPrincipal(), 0, "pool made whole");
+        assertEq(shelf.trancheAssets(2), 1_000_000e6, "junior NAV back to par, no loss");
         assertEq(tiers.limitOf(seller), limitBefore + 2 * Params.RAMP_STEP_USDC);
         BINV binv = shelf.BINV_TOKEN();
         vm.expectRevert();
@@ -259,11 +260,15 @@ contract InvoiceShelfTest is Test {
         vm.prank(servicer);
         shelf.markDefaulted(id2);
 
-        uint256 liquid = shelf.trancheLiquid(0) + shelf.trancheLiquid(1) + shelf.trancheLiquid(2);
-        assertEq(usdc.balanceOf(address(shelf)), liquid, "I3: balance == tranche liquidity (no phantom assets)");
-        // and tranche assets net of loss never exceed what's real
-        uint256 assetsNet = shelf.trancheAssets(0) + shelf.trancheAssets(1) + shelf.trancheAssets(2)
-            - (shelf.trancheLoss(0) + shelf.trancheLoss(1) + shelf.trancheLoss(2));
-        assertLe(assetsNet - (shelf.tranchePrincipal(0) + shelf.tranchePrincipal(1) + shelf.tranchePrincipal(2)), usdc.balanceOf(address(shelf)));
+        // I3 solvency: real USDC held == fundable cash + outstanding-less... no — cash held
+        // is liquid + collected holdback; deployed principal is out with sellers.
+        assertEq(
+            usdc.balanceOf(address(shelf)),
+            shelf.totalLiquid() + shelf.totalHoldbackHeld(),
+            "I3: balance == liquid + held holdback (no phantom cash)"
+        );
+        // pool identity: liquid + principal == Σ deposits − Σ loss
+        uint256 netDeposits = 3_000_000e6 - (shelf.trancheLoss(0) + shelf.trancheLoss(1) + shelf.trancheLoss(2));
+        assertEq(shelf.totalLiquid() + shelf.totalPrincipal(), netDeposits, "pool identity holds");
     }
 }

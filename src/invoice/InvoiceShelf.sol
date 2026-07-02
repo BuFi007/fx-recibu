@@ -11,6 +11,7 @@ import {IBUFIReputationRegistry} from "../interfaces/IBUFIReputationRegistry.sol
 import {WorkspaceTierRegistry} from "../credit/WorkspaceTierRegistry.sol";
 import {BINV} from "./BINV.sol";
 import {BIFTranche} from "./BIFTranche.sol";
+import {WorkspaceOperatingReserve} from "../rails/WorkspaceOperatingReserve.sol";
 import {Params} from "../libraries/Params.sol";
 
 /// @title InvoiceShelf — the single custodian of locked invoices (M3, Tinlake-Shelf-inspired design lineage; no AGPL code)
@@ -33,6 +34,7 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     bytes32 public constant SERVICER_ROLE = keccak256("SERVICER_ROLE");
+    bytes32 public constant OPS_ROLE = keccak256("OPS_ROLE");
 
     enum Status {
         None,
@@ -63,7 +65,9 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     IBUFIReputationRegistry public immutable REPUTATION;
     WorkspaceTierRegistry public immutable TIERS;
     BINV public immutable BINV_TOKEN;
-    BIFTranche[3] public tranches; // [A, B, C]
+    BIFTranche[3] internal _tranches; // [A, B, C]
+    /// @dev M4: seller first-loss capital (waterfall layer 2). Set once post-deploy.
+    WorkspaceOperatingReserve public reserve;
 
     uint256 public nextInvoiceId = 1;
     mapping(uint256 => Invoice) public invoices;
@@ -76,10 +80,18 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     /// @dev one-way cross-default flip (M4 extracts to its own registry)
     mapping(uint256 => bool) public workspaceFrozen;
 
-    /// @dev tranche asset accounting (SPEC §6.2): principal deployed + liquid, minus allocated losses
-    uint256[3] public trancheLiquid; // undeployed USDC per tranche
-    uint256[3] public tranchePrincipal; // outstanding advances funded per tranche
-    uint256[3] public trancheLoss; // realized losses allocated (C fills first)
+    /// @dev SHARED-POOL tranche model (SPEC §6.2). Tranches are risk layers over one pool;
+    ///      cash is fungible for funding, but LOSSES fill junior→senior (C→B→A).
+    ///        NAV(T) = trancheDeposits[T] − trancheLoss[T]     (accrued/reserveCredit = future)
+    ///      Pool identity: totalLiquid + totalPrincipal == Σ deposits − Σ loss.
+    uint256 public totalLiquid; // shared fundable cash (LP capital, undeployed)
+    uint256 public totalPrincipal; // shared outstanding advances (deployed, expected back)
+    uint256[3] public trancheDeposits; // LP capital contributed per tranche (NAV basis + subordination capacity)
+    uint256[3] public trancheLoss; // realized loss allocated per tranche (C fills first)
+    uint256 public totalHoldbackHeld; // collected holdback cash owed to sellers (liability, not tranche capital)
+    /// @dev residual holdback of a settled invoice whose workspace is frozen — custodied,
+    ///      pending M4 recourse netting (part of totalHoldbackHeld; per-workspace slice)
+    mapping(uint256 => uint256) public frozenHoldbackOf;
 
     event InvoiceLocked(
         uint256 indexed invoiceId, uint256 indexed sellerAgentId, uint256 indexed debtorAgentId, uint128 face, uint128 advance, uint8 tranche
@@ -90,6 +102,7 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     event LossAllocated(uint8 indexed tranche, uint256 amount);
     event TrancheDeposit(uint8 indexed tranche, address indexed lp, uint256 assets, uint256 shares);
     event WorkspaceFrozen(uint256 indexed agentId);
+    event DefaultResolved(uint256 indexed invoiceId, bool fraud);
 
     error NotEligible(uint256 agentId);
     error Frozen(uint256 agentId);
@@ -101,6 +114,8 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     error InsufficientTrancheLiquidity(uint8 tranche);
     error NotPastGrace();
     error ZeroAmount();
+    error ReserveAlreadySet();
+    error BondNotPosted(uint256 required, uint256 posted);
 
     constructor(
         IERC20 usdc,
@@ -114,20 +129,31 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         REPUTATION = reputation_;
         TIERS = tiers_;
         BINV_TOKEN = new BINV(address(this));
-        tranches[0] = new BIFTranche("BUFI Invoice Senior", "bIF-A", address(this));
-        tranches[1] = new BIFTranche("BUFI Invoice Mezzanine", "bIF-B", address(this));
-        tranches[2] = new BIFTranche("BUFI Invoice Junior", "bIF-C", address(this));
+        _tranches[0] = new BIFTranche("BUFI Invoice Senior", "bIF-A", address(this));
+        _tranches[1] = new BIFTranche("BUFI Invoice Mezzanine", "bIF-B", address(this));
+        _tranches[2] = new BIFTranche("BUFI Invoice Junior", "bIF-C", address(this));
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
 
-    // ── LP side (M3: par-NAV deposits; BUFIOracle NAV pricing lands next milestone) ──
+    /// @notice one-time wiring of the seller first-loss reserve (M4)
+    function setReserve(WorkspaceOperatingReserve reserve_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (address(reserve) != address(0)) revert ReserveAlreadySet();
+        reserve = reserve_;
+    }
+
+    function tranches(uint8 tranche) public view returns (BIFTranche) {
+        return _tranches[tranche];
+    }
+
+    // ── LP side (M3: par deposits; BUFIOracle prices NAV = deposits − loss) ──
 
     function depositTranche(uint8 tranche, uint256 assets) external nonReentrant returns (uint256 shares) {
         if (assets == 0) revert ZeroAmount();
         USDC.safeTransferFrom(msg.sender, address(this), assets);
-        trancheLiquid[tranche] += assets;
+        totalLiquid += assets;
+        trancheDeposits[tranche] += assets;
         shares = assets * 1e12; // 6-dec USDC → 18-dec shares at par
-        tranches[tranche].mint(msg.sender, shares);
+        _tranches[tranche].mint(msg.sender, shares);
         emit TrancheDeposit(tranche, msg.sender, assets, shares);
     }
 
@@ -173,9 +199,24 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         }
         advancesInEpoch[sellerAgentId][epoch] += 1;
 
-        // tranche placement (SPEC §3.4) — funded from the most-junior eligible bucket
+        // bond gate (SPEC §3.2): weak-tier sellers must have POSTED first-loss capital
+        // covering bondShare × reserveRatio × new outstanding, before funds move.
+        if (address(reserve) != address(0)) {
+            uint16 bondShare = TIERS.bondShareBps(sellerS.sellerScore);
+            uint256 requiredFloor = (
+                (current + advance) * TIERS.reserveRatioBps(sellerS.sellerScore) / Params.BPS
+            ) * bondShare / Params.BPS;
+            if (bondShare > 0 && reserve.balanceOf(sellerAgentId) < requiredFloor) {
+                revert BondNotPosted(requiredFloor, reserve.balanceOf(sellerAgentId));
+            }
+            reserve.setRequired(sellerAgentId, requiredFloor);
+        }
+
+        // tranche placement (SPEC §3.4): the recorded risk layer whose junior-first
+        // capacity must subordinate this advance. Cash is funded from the SHARED pool;
+        // the tranche tag decides who eats a loss first, not which wallet pays out.
         uint8 tranche = uint8(TIERS.trancheEligibility(sellerS.sellerScore, debtorS.debtorScore, pair));
-        if (trancheLiquid[tranche] < advance) revert InsufficientTrancheLiquidity(tranche);
+        if (totalLiquid < advance) revert InsufficientTrancheLiquidity(tranche);
 
         invoiceId = nextInvoiceId++;
         uint32 grace = TIERS.tierOf(sellerS.sellerScore) >= WorkspaceTierRegistry.Tier.Strong
@@ -200,8 +241,8 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
 
         outstandingOf[sellerAgentId] = current + advance;
         debtorOutstandingOf[sellerAgentId][debtorAgentId] += advance;
-        trancheLiquid[tranche] -= advance;
-        tranchePrincipal[tranche] += advance;
+        totalLiquid -= advance;
+        totalPrincipal += advance;
 
         BINV_TOKEN.mint(IDENTITY.ownerOf(sellerAgentId), invoiceId, docs);
         USDC.safeTransfer(IDENTITY.ownerOf(sellerAgentId), advance);
@@ -234,9 +275,10 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         inv.paidInstallments = idx + 1;
         if (toOutstanding > 0) {
             _reduceExposure(inv, toOutstanding);
-            trancheLiquid[inv.tranche] += toOutstanding;
-            tranchePrincipal[inv.tranche] -= toOutstanding;
+            totalPrincipal -= toOutstanding; // receivable repaid → back to fundable cash
+            totalLiquid += toOutstanding;
         }
+        if (remainder > 0) totalHoldbackHeld += remainder; // seller's cash, held as liability
 
         if (onTime) {
             // the ONLY input that raises L(w) — realized repayment (SPEC §4.9)
@@ -263,13 +305,24 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         inv.outstanding = 0;
         _reduceExposure(inv, outstanding);
 
-        // §4.8 layer 1: the UNRELEASED holdback cash held here absorbs first
+        // the receivable is written off the pool; recovery below returns real cash to it
+        totalPrincipal -= outstanding;
+
+        // §4.8 layer 1: the UNRELEASED holdback cash this invoice collected absorbs first
         uint128 fromHoldback = outstanding < inv.holdbackCollected ? outstanding : inv.holdbackCollected;
-        inv.holdbackCollected -= fromHoldback; // recovered value stays with the funding tranche
-        trancheLiquid[inv.tranche] += fromHoldback;
+        inv.holdbackCollected -= fromHoldback;
+        totalHoldbackHeld -= fromHoldback; // that cash now backs the pool, not the seller
+        totalLiquid += fromHoldback;
         uint256 loss = outstanding - fromHoldback;
-        // (layers 2–3, reserve + recourse, land in M4)  layers 4–6: C → B → A
-        tranchePrincipal[inv.tranche] -= outstanding;
+
+        // §4.8 layer 2: the SELLER's posted reserve burns before any LP tranche
+        if (loss > 0 && address(reserve) != address(0)) {
+            uint256 covered = reserve.sweepFor(inv.sellerAgentId, loss);
+            totalLiquid += covered; // reserve cash enters the pool
+            loss -= covered;
+        }
+        // (layer 3 recourse/inflow-diversion is custody-layer policy — SPEC §8.2)
+        // layers 4–6: allocate the residual loss C → B → A over each tranche's capacity
         if (loss > 0) _allocateLoss(loss);
 
         // one-way freeze: no new locks, no residual releases, pending M4 resolution
@@ -280,6 +333,37 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         emit InvoiceDefaulted(invoiceId, loss);
     }
 
+    /// @notice M4 resolution (ops multisig): the PERMANENT_DEFAULT vs RESTRUCTURED split
+    ///         (SPEC §3.3/§4.8). Fraud is identity-terminal and the freeze is permanent;
+    ///         a legitimate-distress restructure marks the history and lifts the freeze
+    ///         (L(w) is unchanged — capacity was earned and stays earned).
+    function resolveDefault(uint256 invoiceId, bool fraud) external onlyRole(OPS_ROLE) {
+        Invoice storage inv = invoices[invoiceId];
+        if (inv.status != Status.Defaulted) revert BadStatus(invoiceId);
+        uint256 contested = frozenHoldbackOf[inv.sellerAgentId];
+        if (fraud) {
+            REPUTATION.setPermanentDefault(inv.sellerAgentId);
+            // fraud: contested holdback is a recovery — apply it against realized losses
+            // (junior-first reversal), returning that value to LPs; excess stays custodied.
+            if (contested > 0) {
+                frozenHoldbackOf[inv.sellerAgentId] = 0;
+                uint256 applied = _recoverLoss(contested);
+                totalHoldbackHeld -= applied;
+                totalLiquid += applied; // recovered cash re-enters the pool (loss reduced in step)
+            }
+        } else {
+            REPUTATION.markRestructured(inv.sellerAgentId);
+            workspaceFrozen[inv.sellerAgentId] = false;
+            // legitimate distress: release the seller's custodied residual back to them
+            if (contested > 0) {
+                frozenHoldbackOf[inv.sellerAgentId] = 0;
+                totalHoldbackHeld -= contested;
+                USDC.safeTransfer(IDENTITY.ownerOf(inv.sellerAgentId), contested);
+            }
+        }
+        emit DefaultResolved(invoiceId, fraud);
+    }
+
     // ── Views ──────────────────────────────────────────────────────────
 
     function installmentDue(uint256 invoiceId, uint8 index) public view returns (uint256) {
@@ -287,9 +371,18 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         return uint256(inv.firstMaturity) + uint256(index) * inv.interval;
     }
 
-    /// @notice SPEC §6.2 tranche assets (NAV numerator; oracle pricing next milestone)
+    /// @notice SPEC §6.2 NAV numerator per tranche: contributed capital minus allocated
+    ///         loss (accrued yield / reserveCredit are future terms, 0 today). BUFIOracle
+    ///         divides this by the tranche's share supply.
     function trancheAssets(uint8 tranche) public view returns (uint256) {
-        return trancheLiquid[tranche] + tranchePrincipal[tranche];
+        uint256 dep = trancheDeposits[tranche];
+        uint256 loss = trancheLoss[tranche];
+        return dep > loss ? dep - loss : 0;
+    }
+
+    /// @notice loss-absorbing capacity still available in a tranche (deposits − loss)
+    function trancheCapacity(uint8 tranche) public view returns (uint256) {
+        return trancheAssets(tranche);
     }
 
     // ── Internals ──────────────────────────────────────────────────────
@@ -298,16 +391,26 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         inv.status = Status.Settled;
         uint256 residual = inv.holdbackCollected; // only CASH actually collected is releasable
         inv.holdbackCollected = 0;
-        // frozen workspaces never receive residuals (cross-default law); retained
-        // cash is netted in M4 recovery rather than released.
         if (residual > 0) {
             if (!workspaceFrozen[inv.sellerAgentId]) {
+                totalHoldbackHeld -= residual;
                 USDC.safeTransfer(IDENTITY.ownerOf(inv.sellerAgentId), residual);
             } else {
-                trancheLiquid[inv.tranche] += residual;
+                // Frozen (cross-default): the seller's residual is CONTESTED capital,
+                // not released and not seized into the LP pool — it stays custodied in
+                // totalHoldbackHeld and is netted against recourse when M4 resolveDefault
+                // runs. Keeps both the pool identity and cash-backed invariants intact.
+                frozenHoldbackOf[inv.sellerAgentId] += residual;
             }
         }
         BINV_TOKEN.burn(invoiceId);
+        // release the bond floor once the workspace carries no exposure (and is clean)
+        if (
+            address(reserve) != address(0) && outstandingOf[inv.sellerAgentId] == 0
+                && !workspaceFrozen[inv.sellerAgentId]
+        ) {
+            reserve.setRequired(inv.sellerAgentId, 0);
+        }
         emit InvoiceSettled(invoiceId, residual);
     }
 
@@ -316,10 +419,14 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         debtorOutstandingOf[inv.sellerAgentId][inv.debtorAgentId] -= amount;
     }
 
-    /// @dev SPEC §4.8 layers 4–6 / §6.2: losses fill junior-first — C until exhausted, then B, then A.
+    /// @dev SPEC §4.8 layers 4–6 / §6.2: losses fill junior-first — C until its
+    ///      capacity (deposits − loss) is exhausted, then B, then A. Senior NAV holds
+    ///      par until junior+mezz are wiped (invariant_seniorNavParUnlessJuniorExhausted).
+    ///      If loss exceeds all capacity (catastrophic), the remainder is unabsorbed —
+    ///      pool insolvency, surfaced rather than silently mis-booked.
     function _allocateLoss(uint256 loss) internal {
         for (uint8 t = 2;; --t) {
-            uint256 capacity = trancheAssets(t) > trancheLoss[t] ? trancheAssets(t) - trancheLoss[t] : 0;
+            uint256 capacity = trancheAssets(t); // = deposits[t] − loss[t], the remaining buffer
             uint256 take = loss < capacity ? loss : capacity;
             if (take > 0) {
                 trancheLoss[t] += take;
@@ -327,6 +434,23 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
                 emit LossAllocated(t, take);
             }
             if (loss == 0 || t == 0) break;
+        }
+    }
+
+    /// @dev reverse of _allocateLoss: apply a recovery against booked losses, senior-first
+    ///      (A repaid before B before C — recoveries unwind the waterfall from the top).
+    ///      Returns the amount actually applied (≤ recovery, capped at total booked loss).
+    function _recoverLoss(uint256 recovery) internal returns (uint256 applied) {
+        for (uint8 t = 0; t < 3; ++t) {
+            uint256 booked = trancheLoss[t];
+            uint256 take = recovery < booked ? recovery : booked;
+            if (take > 0) {
+                trancheLoss[t] -= take;
+                recovery -= take;
+                applied += take;
+                emit LossAllocated(t, 0); // 0-amount marker; recovery detail in DefaultResolved
+            }
+            if (recovery == 0) break;
         }
     }
 }
