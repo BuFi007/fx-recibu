@@ -52,12 +52,12 @@ contract WorkspaceTierRegistry {
     }
 
     /// @notice advance rate in bps of face — a function of the DEBTOR (SPEC §3.1)
-    function advanceRateBps(uint8 debtorScore, bool hasPairHistory) public pure returns (uint16) {
+    function advanceRateBps(uint8 debtorScore, bool pairHistory) public pure returns (uint16) {
         Tier t = tierOf(debtorScore);
         uint16 base = t == Tier.Excellent
             ? Params.ADVANCE_EXCELLENT_BPS
             : t == Tier.Strong ? Params.ADVANCE_STRONG_BPS : t == Tier.Moderate ? Params.ADVANCE_MODERATE_BPS : Params.ADVANCE_DEVELOPING_BPS;
-        if (!hasPairHistory) base -= Params.PAIR_PENALTY_BPS; // bases ≥ 6000 > penalty; cannot underflow
+        if (!pairHistory) base -= Params.PAIR_PENALTY_BPS; // bases ≥ 6000 > penalty; cannot underflow
         return base;
     }
 
@@ -80,23 +80,23 @@ contract WorkspaceTierRegistry {
     }
 
     /// @notice non-recourse offered only when both sides ≥ Strong AND pair history exists (SPEC §3.3)
-    function nonRecourseEligible(uint8 sellerScore, uint8 debtorScore, bool hasPairHistory)
+    function nonRecourseEligible(uint8 sellerScore, uint8 debtorScore, bool pairHistory)
         public
         pure
         returns (bool)
     {
-        return hasPairHistory && tierOf(sellerScore) >= Tier.Strong && tierOf(debtorScore) >= Tier.Strong;
+        return pairHistory && tierOf(sellerScore) >= Tier.Strong && tierOf(debtorScore) >= Tier.Strong;
     }
 
     /// @notice tranche placement (SPEC §3.4) — thin history is junior-funded by construction
-    function trancheEligibility(uint8 sellerScore, uint8 debtorScore, bool hasPairHistory)
+    function trancheEligibility(uint8 sellerScore, uint8 debtorScore, bool pairHistory)
         public
         pure
         returns (TrancheEligibility)
     {
         Tier s = tierOf(sellerScore);
         Tier d = tierOf(debtorScore);
-        if (s == Tier.Developing || d == Tier.Developing || !hasPairHistory) return TrancheEligibility.JuniorC;
+        if (s == Tier.Developing || d == Tier.Developing || !pairHistory) return TrancheEligibility.JuniorC;
         if (s >= Tier.Strong && d >= Tier.Strong) return TrancheEligibility.SeniorA;
         return TrancheEligibility.MezzB;
     }
