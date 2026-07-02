@@ -35,6 +35,7 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
 
     bytes32 public constant SERVICER_ROLE = keccak256("SERVICER_ROLE");
     bytes32 public constant OPS_ROLE = keccak256("OPS_ROLE");
+    bytes32 public constant SETTLEMENT_ROLE = keccak256("SETTLEMENT_ROLE");
 
     enum Status {
         None,
@@ -251,13 +252,26 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
 
     // ── Repayment (SPEC §3.6 — earliest open installment; M5 wires the Memo router in front) ──
 
-    /// @notice apply a debtor payment to the invoice's earliest open installment.
-    ///         Caller transfers USDC in (servicer relays escrowed memo inflows in M3).
+    /// @notice apply a debtor payment (servicer relays directly; pays from own balance).
     function applyPayment(uint256 invoiceId, uint256 amount) external onlyRole(SERVICER_ROLE) nonReentrant {
+        _applyPayment(invoiceId, amount, msg.sender);
+    }
+
+    /// @notice M5: the settlement orchestrator applies an escrowed inflow on the debtor's
+    ///         behalf (payer = the escrow/settlement contract holding the funds).
+    function applyPaymentFrom(uint256 invoiceId, uint256 amount, address payer)
+        external
+        onlyRole(SETTLEMENT_ROLE)
+        nonReentrant
+    {
+        _applyPayment(invoiceId, amount, payer);
+    }
+
+    function _applyPayment(uint256 invoiceId, uint256 amount, address payer) internal {
         Invoice storage inv = invoices[invoiceId];
         if (inv.status != Status.Funded) revert BadStatus(invoiceId);
         if (amount == 0) revert ZeroAmount();
-        USDC.safeTransferFrom(msg.sender, address(this), amount);
+        USDC.safeTransferFrom(payer, address(this), amount);
 
         uint8 idx = inv.paidInstallments;
         uint256 due = installmentDue(invoiceId, idx);
@@ -369,6 +383,15 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     function installmentDue(uint256 invoiceId, uint8 index) public view returns (uint256) {
         Invoice storage inv = invoices[invoiceId];
         return uint256(inv.firstMaturity) + uint256(index) * inv.interval;
+    }
+
+    /// @notice rail-facing views (IInvoiceShelf)
+    function invoiceStatus(uint256 invoiceId) external view returns (Status) {
+        return invoices[invoiceId].status;
+    }
+
+    function sellerAgentIdOf(uint256 invoiceId) external view returns (uint256) {
+        return invoices[invoiceId].sellerAgentId;
     }
 
     /// @notice SPEC §6.2 NAV numerator per tranche: contributed capital minus allocated
