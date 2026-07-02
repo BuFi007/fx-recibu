@@ -1,0 +1,19 @@
+[profile.default]
+solc_version = "0.8.26"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+src = "src"
+test = "test"
+libs = ["lib"]
+fuzz = { runs = 256 }
+
+[profile.ci]
+fuzz = { runs = 1024 }
+
+[profile.deep]
+fuzz = { runs = 10000 }
+
+[rpc_endpoints]
+arc_testnet = "https://rpc.testnet.arc.network"
