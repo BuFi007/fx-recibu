@@ -14,6 +14,13 @@ import {BIFTranche} from "./BIFTranche.sol";
 import {WorkspaceOperatingReserve} from "../rails/WorkspaceOperatingReserve.sol";
 import {Params} from "../libraries/Params.sol";
 
+/// @dev Minimal view into ReceivableEscrow so markDefaulted can detect an unsettled
+///      debtor payment (deposited via InvoiceMemoRouter.pay) before writing off the
+///      receivable. Full escrow behaviour lives in src/rails/ReceivableEscrow.sol.
+interface IReceivableEscrowView {
+    function escrowedOf(uint256 invoiceId) external view returns (uint256);
+}
+
 /// @title InvoiceShelf — the single custodian of locked invoices (M3, Tinlake-Shelf-inspired design lineage; no AGPL code)
 ///
 ///  lockInvoice (SERVICER attests docs)                         apply memo inflow
@@ -69,6 +76,9 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     BIFTranche[3] internal _tranches; // [A, B, C]
     /// @dev M4: seller first-loss capital (waterfall layer 2). Set once post-deploy.
     WorkspaceOperatingReserve public reserve;
+    /// @dev M5: the receivable escrow, so markDefaulted can detect an unsettled debtor
+    ///      payment sitting in escrow before defaulting. Set once post-deploy.
+    IReceivableEscrowView public escrow;
 
     uint256 public nextInvoiceId = 1;
     mapping(uint256 => Invoice) public invoices;
@@ -116,6 +126,8 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     error NotPastGrace();
     error ZeroAmount();
     error ReserveAlreadySet();
+    error EscrowAlreadySet();
+    error EscrowPendingSettlement(uint256 invoiceId);
     error BondNotPosted(uint256 required, uint256 posted);
 
     constructor(
@@ -140,6 +152,13 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     function setReserve(WorkspaceOperatingReserve reserve_) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (address(reserve) != address(0)) revert ReserveAlreadySet();
         reserve = reserve_;
+    }
+
+    /// @notice one-time wiring of the receivable escrow (M5). Lets markDefaulted see an
+    ///         unsettled debtor payment before writing off the receivable.
+    function setEscrow(address escrow_) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (address(escrow) != address(0)) revert EscrowAlreadySet();
+        escrow = IReceivableEscrowView(escrow_);
     }
 
     function tranches(uint8 tranche) public view returns (BIFTranche) {
@@ -313,6 +332,15 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         if (inv.status != Status.Funded) revert BadStatus(invoiceId);
         uint256 due = installmentDue(invoiceId, inv.paidInstallments);
         if (block.timestamp <= due + inv.grace) revert NotPastGrace();
+
+        // A debtor payment already deposited into escrow (via InvoiceMemoRouter.pay) has
+        // NOT advanced the shelf — settlement applies it out-of-band (paidInstallments==0 is
+        // not the same as unpaid). Defaulting now would book a phantom loss (tranche C→B→A),
+        // freeze a paying seller, and strand the debtor's cash. Require the keeper to drain
+        // the escrow via InvoiceSettlement.settle() before any default judgement.
+        if (address(escrow) != address(0) && escrow.escrowedOf(invoiceId) > 0) {
+            revert EscrowPendingSettlement(invoiceId);
+        }
 
         inv.status = Status.Defaulted;
         uint128 outstanding = inv.outstanding;

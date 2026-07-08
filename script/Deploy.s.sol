@@ -108,6 +108,7 @@ contract Deploy is Script {
         d.escrow.grantRole(d.escrow.ROUTER_ROLE(), address(d.router));
         d.escrow.grantRole(d.escrow.SETTLEMENT_ROLE(), address(d.settlement));
         d.shelf.setReserve(d.reserve);
+        d.shelf.setEscrow(address(d.escrow));
         d.reserve.grantRole(d.reserve.SHELF_ROLE(), address(d.shelf));
     }
 

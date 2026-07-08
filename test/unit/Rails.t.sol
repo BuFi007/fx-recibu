@@ -71,6 +71,7 @@ contract RailsTest is Test {
         escrow.grantRole(escrow.SETTLEMENT_ROLE(), address(settlement));
         escrow.grantRole(escrow.ARBITER_ROLE(), ops);
         settlement.grantRole(settlement.KEEPER_ROLE(), keeper);
+        shelf.setEscrow(address(escrow));
         vm.stopPrank();
 
         seller = _ws("seller", sellerOwner, 74, 74);
@@ -228,5 +229,34 @@ contract RailsTest is Test {
         settlement.settle(invId);
         assertEq(escrow.totalEscrowed(), usdc.balanceOf(address(escrow)));
         assertEq(escrow.totalEscrowed(), 0);
+    }
+
+    // ── markDefaulted must not phantom-default an invoice already paid into escrow ──
+    //    (Gateman HIGH — markDefaulted ignored ReceivableEscrow, booking a fake loss
+    //     + freezing a paying seller while the debtor's cash sat in escrow)
+
+    function test_markDefaulted_revertsWhenEscrowFunded() public {
+        // debtor pays on time into escrow, but the keeper has NOT settled yet
+        vm.prank(debtorPayer);
+        router.pay(invId, 0, 250e6);
+        // installment-0 grace elapses before settle() runs
+        vm.warp(block.timestamp + 40 days);
+        // servicer default attempt must be blocked — the payment is sitting in escrow
+        vm.prank(servicer);
+        vm.expectRevert(abi.encodeWithSelector(InvoiceShelf.EscrowPendingSettlement.selector, invId));
+        shelf.markDefaulted(invId);
+        // funds untouched, seller not frozen, no phantom loss
+        assertEq(escrow.escrowedOf(invId), 250e6);
+        assertFalse(shelf.workspaceFrozen(seller));
+        assertEq(uint8(shelf.invoiceStatus(invId)), uint8(IInvoiceShelf.Status.Funded));
+    }
+
+    function test_markDefaulted_succeedsWhenGenuinelyUnpaid() public {
+        // no escrow deposit at all; grace elapses → a real miss defaults normally
+        vm.warp(block.timestamp + 40 days);
+        vm.prank(servicer);
+        shelf.markDefaulted(invId);
+        assertEq(uint8(shelf.invoiceStatus(invId)), uint8(IInvoiceShelf.Status.Defaulted));
+        assertTrue(shelf.workspaceFrozen(seller));
     }
 }
