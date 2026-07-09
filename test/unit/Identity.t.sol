@@ -83,7 +83,7 @@ contract IdentityTest is Test {
         vm.warp(block.timestamp + 11);
         assertFalse(identity.kybApproved(id));
         vm.prank(issuer);
-        vm.expectRevert(BUFIIdentityRegistry.StaleKybVersion.selector);
+        vm.expectRevert(abi.encodeWithSelector(BUFIIdentityRegistry.StaleKybVersion.selector, 1, 1));
         identity.setKybStatus(id, false, 0, 1, bytes32("op1"));
     }
 
