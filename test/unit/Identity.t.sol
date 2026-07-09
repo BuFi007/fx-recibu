@@ -75,6 +75,18 @@ contract IdentityTest is Test {
         identity.setKybStatus(id, false);
     }
 
+    function test_kybCredentialExpiresAndVersions() public {
+        uint256 id = _register();
+        vm.prank(issuer);
+        identity.setKybStatus(id, true, uint64(block.timestamp + 10), 1, bytes32("op1"));
+        assertTrue(identity.kybApproved(id));
+        vm.warp(block.timestamp + 11);
+        assertFalse(identity.kybApproved(id));
+        vm.prank(issuer);
+        vm.expectRevert(BUFIIdentityRegistry.StaleKybVersion.selector);
+        identity.setKybStatus(id, false, 0, 1, bytes32("op1"));
+    }
+
     // ── reputation write-path law ──
 
     function test_setScore_onlyAttestor_andRangeChecked() public {

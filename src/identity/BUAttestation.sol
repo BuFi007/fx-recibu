@@ -35,6 +35,10 @@ contract BUAttestation is AccessControl, EIP712 {
 
     /// @notice the HSM signing key of the scoring service
     address public signer;
+    address public donForwarder;
+    bytes32 public expectedWorkflowId;
+    uint64 public targetChainSelector;
+    mapping(bytes32 => bool) public processedDonOperations;
     /// @notice sequential per-agent nonce — an attestation is single-use, in order
     mapping(uint256 => uint256) public nonces;
 
@@ -46,6 +50,11 @@ contract BUAttestation is AccessControl, EIP712 {
     error Expired(uint256 deadline);
     error BadNonce(uint256 expected, uint256 got);
     error BadSignature();
+    error NotDonForwarder();
+    error DonReplay(bytes32 operationId);
+    error DonExpired();
+    error DonWrongWorkflow();
+    error DonWrongChain();
 
     constructor(address admin, address signer_, IBUFIIdentityRegistry identity_, IBUFIReputationRegistry reputation_)
         EIP712("BUAttestation", "1")
@@ -65,6 +74,16 @@ contract BUAttestation is AccessControl, EIP712 {
         if (newSigner == address(0)) revert ZeroAddress();
         signer = newSigner;
         emit SignerSet(newSigner);
+    }
+
+    function setDonConfig(address forwarder, bytes32 workflowId, uint64 chainSelector) external onlyRole(DEFAULT_ADMIN_ROLE) { if (forwarder == address(0) || workflowId == bytes32(0) || chainSelector == 0) revert ZeroAddress(); donForwarder = forwarder; expectedWorkflowId = workflowId; targetChainSelector = chainSelector; }
+
+    /// @notice CRE/DON report: abi.encode(uint8 kind,uint256 agentId,bool approved,uint64 validUntil,uint64 version,bytes32 operationId,bytes32 workflowId,uint64 chainSelector,uint64 expiresAt)
+    function onReport(bytes calldata, bytes calldata report) external {
+        if (msg.sender != donForwarder) revert NotDonForwarder();
+        (uint8 kind, uint256 agentId, bool approved, uint64 validUntil, uint64 version, bytes32 operationId, bytes32 workflowId, uint64 chainSelector, uint64 expiresAt) = abi.decode(report, (uint8,uint256,bool,uint64,uint64,bytes32,bytes32,uint64,uint64));
+        if (kind > 1 || workflowId != expectedWorkflowId) revert DonWrongWorkflow(); if (chainSelector != targetChainSelector) revert DonWrongChain(); if (expiresAt < block.timestamp) revert DonExpired(); if (processedDonOperations[operationId]) revert DonReplay(operationId); processedDonOperations[operationId] = true;
+        IDENTITY.setKybStatus(agentId, approved, validUntil, version, operationId);
     }
 
     function attestScore(
