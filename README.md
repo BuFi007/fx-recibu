@@ -9,6 +9,35 @@ by design.
 > **Authoritative specs:** `SPEC.md`, `SPEC_CREDIT_PASSPORT.md`, `ROADMAP.md`.
 > **Audits/analysis:** `docs/GATEMAN_AUDIT.md`, `docs/BUCKET_ANALYSIS.md`, `docs/THREAT_MODEL.md`, `docs/LEGAL_BOUNDARIES.md`, `docs/LICENSE_BOUNDARIES.md`.
 
+## Private AML Architecture (ACE)
+
+Factoring settles **privately by default** — the seller's payout address + the settled amount never hit the
+public chain in the clear. Compliance is enforced at the **shield boundary** (an AML check *before* funds enter
+the privacy pool), not by making the ledger public. This follows the shared Veil/Haven flow used by BOTH invoice
+factoring (this repo) and private payroll (`fx-sobre`):
+
+```
+  DEPOSIT            SHIELD                          WITHDRAW         RAMPS (KYC/KYB)
+ Factor/LP ──▶ Fresh/Stealth ─▶ AML Check ─▶ Privacy Pool ─▶ Fresh Addr    Fiat ⇄ Crypto via
+ capital      Address                                       (seller)      ID Verification +
+                                                                          Licensed Provider + Bank
+```
+
+- **Deposit** — factor / tranche capital funds the shelf; the seller payout targets a **fresh address** per
+  settlement (never reused).
+- **Shield** — an **AML check** (ACE PolicyEngine) screens **seller + debtor** *before* `lockInvoice` / settle;
+  a failed screen reverts (`PolicyRejected`), it does not quarantine-then-leak. Only the aggregate proof + the
+  `RecibuPayment` twin (memoId) is public; per-party (address, amount) stays shielded.
+- **Withdraw** — the seller receives `face − holdback` to a fresh address, unlinkable to the factor/LP.
+- **Ramps** — seller off-ramp goes through **KYC (Persona) + a licensed provider**; the KYB-approved workspace
+  credential is a reusable ACE attestation, verified once, read by the AML policy on each chain.
+
+ACE (hide-sender + Privacy Pools inside a Confidential-HTTP TEE) is the shield. The `RecibuMemoRouter` +
+`RecibuPayment` event is the on-chain settlement entry that then shields via ACE. Full design + the
+now-vs-ACE-Early-Access build split:
+**desk-v1 `docs/superpowers/specs/2026-07-09-private-aml-architecture-ace.md`**.
+**Non-negotiable:** private is the default; a transparent settlement is an explicit, gated downgrade.
+
 ## Build status
 
 `forge test` → **67 passing** (unit + integration + 4 fuzzed fraud-containment invariants
