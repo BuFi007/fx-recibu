@@ -6,6 +6,8 @@ import {console2} from "forge-std/console2.sol";
 import {BUFIIdentityRegistry} from "../src/identity/BUFIIdentityRegistry.sol";
 import {BUFIReputationRegistry} from "../src/identity/BUFIReputationRegistry.sol";
 import {BUAttestation} from "../src/identity/BUAttestation.sol";
+import {KybWorkspacePolicy} from "../src/identity/KybWorkspacePolicy.sol";
+import {IKybCredentialReader} from "../src/interfaces/IKybCredentialReader.sol";
 import {WorkspaceTierRegistry} from "../src/credit/WorkspaceTierRegistry.sol";
 import {InvoiceShelf} from "../src/invoice/InvoiceShelf.sol";
 import {BUFIOracle} from "../src/invoice/BUFIOracle.sol";
@@ -36,6 +38,7 @@ contract Deploy is Script {
         BUFIIdentityRegistry identity;
         BUFIReputationRegistry reputation;
         BUAttestation attestation;
+        KybWorkspacePolicy kybPolicy;
         WorkspaceTierRegistry tiers;
         InvoiceShelf shelf;
         BUFIOracle oracleA;
@@ -76,6 +79,9 @@ contract Deploy is Script {
         d.attestation = new BUAttestation(
             boot, hsmSigner, IBUFIIdentityRegistry(address(d.identity)), IBUFIReputationRegistry(address(d.reputation))
         );
+        // ACE PolicyEngine registration is owner/EA-gated; deploy the policy
+        // now so the same deterministic stack can attach it at promotion.
+        d.kybPolicy = new KybWorkspacePolicy(IKybCredentialReader(address(d.attestation)));
         // ── credit (M2) ──
         d.tiers = new WorkspaceTierRegistry(
             IBUFIIdentityRegistry(address(d.identity)), IBUFIReputationRegistry(address(d.reputation))
@@ -152,6 +158,7 @@ contract Deploy is Script {
         console2.log("identity     ", address(d.identity));
         console2.log("reputation   ", address(d.reputation));
         console2.log("attestation  ", address(d.attestation));
+        console2.log("kyb policy   ", address(d.kybPolicy));
         console2.log("tiers        ", address(d.tiers));
         console2.log("shelf        ", address(d.shelf));
         console2.log("oracleC (jr) ", address(d.oracleC));

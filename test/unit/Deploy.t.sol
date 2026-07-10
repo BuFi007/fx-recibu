@@ -36,6 +36,7 @@ contract DeployIntegrationTest is Test {
         usdc = new DeployUSDC();
         deployer = new Deploy();
         d = deployer.deploy(usdc, admin, hsm);
+        assertEq(address(d.kybPolicy.CREDENTIALS()), address(d.attestation));
     }
 
     function _attestScore(uint256 agentId, uint8 s, uint8 dScore, uint256 nonce) internal {
