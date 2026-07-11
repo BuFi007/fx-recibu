@@ -13,6 +13,8 @@ import {BINV} from "./BINV.sol";
 import {BIFTranche} from "./BIFTranche.sol";
 import {WorkspaceOperatingReserve} from "../rails/WorkspaceOperatingReserve.sol";
 import {Params} from "../libraries/Params.sol";
+import {ReceivableCommitment} from "../libraries/ReceivableCommitment.sol";
+import {FactoringEvidenceV1} from "../libraries/FactoringEvidenceV1.sol";
 
 /// @dev Minimal view into ReceivableEscrow so markDefaulted can detect an unsettled
 ///      debtor payment (deposited via InvoiceMemoRouter.pay) before writing off the
@@ -83,6 +85,16 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     uint256 public nextInvoiceId = 1;
     mapping(uint256 => Invoice) public invoices;
 
+    /// @dev Permanent anti-double-financing indices. Terminal invoice states and bINV
+    ///      burns MUST NOT clear these values.
+    mapping(bytes32 commitment => uint256 invoiceId) public invoiceIdOfReceivableCommitment;
+    mapping(uint256 invoiceId => bytes32 commitment) public receivableCommitmentOf;
+    mapping(bytes32 authorityInvoiceId => uint256 invoiceId) public invoiceIdOfAuthorityInvoiceId;
+    mapping(uint256 invoiceId => bytes32 authorityInvoiceId) public authorityInvoiceIdOf;
+    mapping(uint256 invoiceId => bytes32 canonicalInvoiceCommitmentHash) public canonicalInvoiceCommitmentHashOf;
+    mapping(uint256 invoiceId => bytes32 documentBundleHash) public documentBundleHashOf;
+    mapping(uint256 invoiceId => FactoringEvidenceV1 evidence) public factoringEvidenceOf;
+
     /// @dev I1 accounting: per-seller aggregate outstanding + per-(seller,debtor) outstanding
     mapping(uint256 => uint256) public outstandingOf;
     mapping(uint256 => mapping(uint256 => uint256)) public debtorOutstandingOf;
@@ -105,7 +117,22 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     mapping(uint256 => uint256) public frozenHoldbackOf;
 
     event InvoiceLocked(
-        uint256 indexed invoiceId, uint256 indexed sellerAgentId, uint256 indexed debtorAgentId, uint128 face, uint128 advance, uint8 tranche
+        uint256 indexed invoiceId,
+        uint256 indexed sellerAgentId,
+        uint256 indexed debtorAgentId,
+        uint128 face,
+        uint128 advance,
+        uint8 tranche
+    );
+    event ReceivableCommitmentConsumed(
+        bytes32 indexed commitment, uint256 indexed invoiceId, bytes32 indexed documentBundleHash
+    );
+    event AuthorityInvoiceIdConsumed(bytes32 indexed authorityInvoiceId, uint256 indexed invoiceId);
+    event FactoringEvidenceBound(
+        uint256 indexed invoiceId,
+        bytes32 indexed featureRootHash,
+        bytes32 indexed currentSnapshotHash,
+        bytes32 privateTermsHash
     );
     event InstallmentPaid(uint256 indexed invoiceId, uint8 index, uint256 amount, bool onTime);
     event InvoiceSettled(uint256 indexed invoiceId, uint256 holdbackReleased);
@@ -129,6 +156,15 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     error EscrowAlreadySet();
     error EscrowPendingSettlement(uint256 invoiceId);
     error BondNotPosted(uint256 required, uint256 posted);
+    error IncompleteReceivableIdentity();
+    error IncompleteDocumentBundle();
+    error InvalidIssueDate(uint64 issuedAt, uint256 currentTimestamp);
+    error InvalidDueDate(uint64 issuedAt, uint64 dueAt);
+    error ScheduleDueOutOfRange(uint256 expectedDueAt);
+    error ScheduleDueMismatch(uint64 providedDueAt, uint64 expectedDueAt);
+    error ReceivableAlreadyConsumed(bytes32 commitment, uint256 originalInvoiceId);
+    error AuthorityInvoiceAlreadyConsumed(bytes32 authorityInvoiceId, uint256 originalInvoiceId);
+    error IncompleteFactoringEvidence();
 
     constructor(
         IERC20 usdc,
@@ -186,6 +222,8 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         uint8 nInstallments,
         uint64 firstMaturity,
         uint32 interval,
+        ReceivableCommitment.Terms calldata terms,
+        FactoringEvidenceV1 calldata evidence,
         BINV.DocBundle calldata docs
     ) external onlyRole(SERVICER_ROLE) nonReentrant returns (uint256 invoiceId) {
         // v2v hard gate: KYB'd + not defaulted, both sides (SPEC §1)
@@ -196,6 +234,34 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
             nInstallments < Params.MIN_INSTALLMENTS || nInstallments > Params.MAX_INSTALLMENTS
                 || interval < Params.MIN_INSTALLMENT_INTERVAL || firstMaturity <= block.timestamp || face == 0
         ) revert BadSchedule();
+        if (terms.canonicalInvoiceCommitmentHash == bytes32(0)) revert IncompleteReceivableIdentity();
+        if (
+            docs.invoiceDocHash == bytes32(0) || docs.assignmentHash == bytes32(0)
+                || docs.paymentInstructionHash == bytes32(0) || docs.servicingPolicyHash == bytes32(0)
+                || docs.disputePolicyHash == bytes32(0)
+        ) revert IncompleteDocumentBundle();
+        if (
+            evidence.featureRootHash == bytes32(0) || evidence.currentSnapshotHash == bytes32(0)
+                || evidence.privateTermsHash == bytes32(0)
+        ) revert IncompleteFactoringEvidence();
+        if (terms.issuedAt == 0 || terms.issuedAt > block.timestamp) {
+            revert InvalidIssueDate(terms.issuedAt, block.timestamp);
+        }
+        if (terms.dueAt <= terms.issuedAt) revert InvalidDueDate(terms.issuedAt, terms.dueAt);
+
+        uint256 expectedDueAtValue = uint256(firstMaturity) + uint256(nInstallments - 1) * uint256(interval);
+        if (expectedDueAtValue > type(uint64).max) revert ScheduleDueOutOfRange(expectedDueAtValue);
+        uint64 expectedDueAt = uint64(expectedDueAtValue);
+        if (terms.dueAt != expectedDueAt) revert ScheduleDueMismatch(terms.dueAt, expectedDueAt);
+
+        bytes32 commitment = computeReceivableCommitment(sellerAgentId, debtorAgentId, face, terms, docs.assignmentHash);
+        bytes32 authorityInvoiceId = ReceivableCommitment.authorityInvoiceId(terms.canonicalInvoiceCommitmentHash);
+        uint256 originalInvoiceId = invoiceIdOfReceivableCommitment[commitment];
+        if (originalInvoiceId != 0) revert ReceivableAlreadyConsumed(commitment, originalInvoiceId);
+        originalInvoiceId = invoiceIdOfAuthorityInvoiceId[authorityInvoiceId];
+        if (originalInvoiceId != 0) {
+            revert AuthorityInvoiceAlreadyConsumed(authorityInvoiceId, originalInvoiceId);
+        }
 
         bool pair = TIERS.hasPairHistory(sellerAgentId, debtorAgentId);
         IBUFIReputationRegistry.ScoreSnapshot memory sellerS = REPUTATION.scoreOf(sellerAgentId);
@@ -223,9 +289,8 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         // covering bondShare × reserveRatio × new outstanding, before funds move.
         if (address(reserve) != address(0)) {
             uint16 bondShare = TIERS.bondShareBps(sellerS.sellerScore);
-            uint256 requiredFloor = (
-                (current + advance) * TIERS.reserveRatioBps(sellerS.sellerScore) / Params.BPS
-            ) * bondShare / Params.BPS;
+            uint256 requiredFloor = ((current + advance) * TIERS.reserveRatioBps(sellerS.sellerScore) / Params.BPS)
+                * bondShare / Params.BPS;
             if (bondShare > 0 && reserve.balanceOf(sellerAgentId) < requiredFloor) {
                 revert BondNotPosted(requiredFloor, reserve.balanceOf(sellerAgentId));
             }
@@ -239,6 +304,14 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         if (totalLiquid < advance) revert InsufficientTrancheLiquidity(tranche);
 
         invoiceId = nextInvoiceId++;
+        bytes32 documentBundleHash = ReceivableCommitment.hashDocumentBundle(docs);
+        invoiceIdOfReceivableCommitment[commitment] = invoiceId;
+        receivableCommitmentOf[invoiceId] = commitment;
+        invoiceIdOfAuthorityInvoiceId[authorityInvoiceId] = invoiceId;
+        authorityInvoiceIdOf[invoiceId] = authorityInvoiceId;
+        canonicalInvoiceCommitmentHashOf[invoiceId] = terms.canonicalInvoiceCommitmentHash;
+        documentBundleHashOf[invoiceId] = documentBundleHash;
+        factoringEvidenceOf[invoiceId] = evidence;
         uint32 grace = TIERS.tierOf(sellerS.sellerScore) >= WorkspaceTierRegistry.Tier.Strong
             ? Params.GRACE_STRONG
             : Params.GRACE_WEAK;
@@ -266,6 +339,11 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
 
         BINV_TOKEN.mint(IDENTITY.ownerOf(sellerAgentId), invoiceId, docs);
         USDC.safeTransfer(IDENTITY.ownerOf(sellerAgentId), advance);
+        emit ReceivableCommitmentConsumed(commitment, invoiceId, documentBundleHash);
+        emit AuthorityInvoiceIdConsumed(authorityInvoiceId, invoiceId);
+        emit FactoringEvidenceBound(
+            invoiceId, evidence.featureRootHash, evidence.currentSnapshotHash, evidence.privateTermsHash
+        );
         emit InvoiceLocked(invoiceId, sellerAgentId, debtorAgentId, face, advance, tranche);
     }
 
@@ -420,6 +498,24 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
 
     function sellerAgentIdOf(uint256 invoiceId) external view returns (uint256) {
         return invoices[invoiceId].sellerAgentId;
+    }
+
+    /// @notice Compute the exact V1 commitment Desk/CRE must submit, without consuming it.
+    function computeReceivableCommitment(
+        uint256 sellerAgentId,
+        uint256 debtorAgentId,
+        uint128 face,
+        ReceivableCommitment.Terms memory terms,
+        bytes32 assignmentHash
+    ) public view returns (bytes32) {
+        return ReceivableCommitment.compute(
+            block.chainid, sellerAgentId, debtorAgentId, address(USDC), face, terms, assignmentHash
+        );
+    }
+
+    /// @notice Derive the only authority invoice ID accepted by the shelf's V1 lock path.
+    function computeAuthorityInvoiceId(bytes32 canonicalInvoiceCommitmentHash) public pure returns (bytes32) {
+        return ReceivableCommitment.authorityInvoiceId(canonicalInvoiceCommitmentHash);
     }
 
     /// @notice SPEC §6.2 NAV numerator per tranche: contributed capital minus allocated

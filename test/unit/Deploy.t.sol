@@ -5,13 +5,21 @@ import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Deploy} from "../../script/Deploy.s.sol";
 import {BINV} from "../../src/invoice/BINV.sol";
+import {ReceivableCommitment} from "../../src/libraries/ReceivableCommitment.sol";
+import {FactoringEvidenceV1} from "../../src/libraries/FactoringEvidenceV1.sol";
 import {IInvoiceShelf} from "../../src/interfaces/IInvoiceShelf.sol";
 import {IBUFIReputationRegistry} from "../../src/interfaces/IBUFIReputationRegistry.sol";
 
 contract DeployUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
-    function decimals() public pure override returns (uint8) { return 6; }
-    function mint(address to, uint256 a) external { _mint(to, a); }
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+
+    function mint(address to, uint256 a) external {
+        _mint(to, a);
+    }
 }
 
 /// @notice M8 integration: deploy the full wired stack and drive an invoice from KYB →
@@ -97,9 +105,20 @@ contract DeployIntegrationTest is Test {
         vm.stopPrank();
 
         // servicer (admin) locks the accepted invoice
+        uint64 firstMaturity = uint64(block.timestamp + 30 days);
         vm.prank(admin);
-        uint256 inv =
-            d.shelf.lockInvoice(seller, debtor, 500e6, 2, uint64(block.timestamp + 30 days), 30 days, _bundle());
+        uint256 inv = d.shelf
+            .lockInvoice(
+                seller,
+                debtor,
+                500e6,
+                2,
+                firstMaturity,
+                30 days,
+                _terms(keccak256("ARCA:deploy:invoice"), firstMaturity),
+                _evidence(keccak256("ARCA:deploy:invoice")),
+                _bundle()
+            );
         assertEq(d.shelf.BINV_TOKEN().ownerOf(inv), sellerOwner);
         assertEq(usdc.balanceOf(sellerOwner), 425e6); // 85% advance
 
@@ -132,5 +151,25 @@ contract DeployIntegrationTest is Test {
 
     function _bundle() internal pure returns (BINV.DocBundle memory) {
         return BINV.DocBundle(bytes32("i"), bytes32("a"), bytes32("p"), bytes32("s"), bytes32("d"));
+    }
+
+    function _terms(bytes32 authorityId, uint64 firstMaturity)
+        internal
+        view
+        returns (ReceivableCommitment.Terms memory)
+    {
+        return ReceivableCommitment.Terms({
+            canonicalInvoiceCommitmentHash: authorityId,
+            issuedAt: uint64(block.timestamp),
+            dueAt: firstMaturity + 30 days
+        });
+    }
+
+    function _evidence(bytes32 seed) internal pure returns (FactoringEvidenceV1 memory) {
+        return FactoringEvidenceV1({
+            featureRootHash: keccak256(abi.encode("FEATURE_ROOT", seed)),
+            currentSnapshotHash: keccak256(abi.encode("CURRENT_SNAPSHOT", seed)),
+            privateTermsHash: keccak256(abi.encode("PRIVATE_TERMS", seed))
+        });
     }
 }

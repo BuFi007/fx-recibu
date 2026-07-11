@@ -8,6 +8,8 @@ import {BUFIReputationRegistry} from "../../src/identity/BUFIReputationRegistry.
 import {WorkspaceTierRegistry} from "../../src/credit/WorkspaceTierRegistry.sol";
 import {InvoiceShelf} from "../../src/invoice/InvoiceShelf.sol";
 import {BINV} from "../../src/invoice/BINV.sol";
+import {ReceivableCommitment} from "../../src/libraries/ReceivableCommitment.sol";
+import {FactoringEvidenceV1} from "../../src/libraries/FactoringEvidenceV1.sol";
 import {RecibuSettlementGuardHook} from "../../src/hooks/RecibuSettlementGuardHook.sol";
 import {PoolKey, Currency, IPoolManager, BeforeSwapDelta, IRecibuPriceFeed} from "../../src/interfaces/IV4Types.sol";
 import {IInvoiceShelf} from "../../src/interfaces/IInvoiceShelf.sol";
@@ -15,15 +17,28 @@ import {Params} from "../../src/libraries/Params.sol";
 
 contract GuardUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
-    function decimals() public pure override returns (uint8) { return 6; }
-    function mint(address to, uint256 a) external { _mint(to, a); }
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+
+    function mint(address to, uint256 a) external {
+        _mint(to, a);
+    }
 }
 
 contract MockFeed is IRecibuPriceFeed {
     uint256 public p;
     uint256 public t;
-    function set(uint256 price_, uint256 updatedAt_) external { p = price_; t = updatedAt_; }
-    function latest() external view returns (uint256, uint256) { return (p, t); }
+
+    function set(uint256 price_, uint256 updatedAt_) external {
+        p = price_;
+        t = updatedAt_;
+    }
+
+    function latest() external view returns (uint256, uint256) {
+        return (p, t);
+    }
 }
 
 contract GuardHookTest is Test {
@@ -77,8 +92,19 @@ contract GuardHookTest is Test {
         shelf.depositTranche(2, 1_000_000e6);
         vm.stopPrank();
 
+        uint64 firstMaturity = uint64(block.timestamp + 30 days);
         vm.prank(servicer);
-        invId = shelf.lockInvoice(seller, debtor, 500e6, 2, uint64(block.timestamp + 30 days), 30 days, _docs());
+        invId = shelf.lockInvoice(
+            seller,
+            debtor,
+            500e6,
+            2,
+            firstMaturity,
+            30 days,
+            _terms(keccak256("ARCA:guard:primary"), firstMaturity),
+            _evidence(keccak256("ARCA:guard:primary")),
+            _docs()
+        );
 
         feed.set(1e18, block.timestamp); // fresh, parity
     }
@@ -94,6 +120,26 @@ contract GuardHookTest is Test {
 
     function _docs() internal pure returns (BINV.DocBundle memory) {
         return BINV.DocBundle(bytes32("i"), bytes32("a"), bytes32("p"), bytes32("s"), bytes32("d"));
+    }
+
+    function _terms(bytes32 authorityId, uint64 firstMaturity)
+        internal
+        view
+        returns (ReceivableCommitment.Terms memory)
+    {
+        return ReceivableCommitment.Terms({
+            canonicalInvoiceCommitmentHash: authorityId,
+            issuedAt: uint64(block.timestamp),
+            dueAt: firstMaturity + 30 days
+        });
+    }
+
+    function _evidence(bytes32 seed) internal pure returns (FactoringEvidenceV1 memory) {
+        return FactoringEvidenceV1({
+            featureRootHash: keccak256(abi.encode("FEATURE_ROOT", seed)),
+            currentSnapshotHash: keccak256(abi.encode("CURRENT_SNAPSHOT", seed)),
+            privateTermsHash: keccak256(abi.encode("PRIVATE_TERMS", seed))
+        });
     }
 
     function _ctx(uint256 id, address req, address recip, uint256 deadline)
@@ -143,7 +189,9 @@ contract GuardHookTest is Test {
 
     function test_revert_notPoolManager() public {
         vm.expectRevert(RecibuSettlementGuardHook.NotPoolManager.selector);
-        hook.beforeSwap(requester, _key(), _params(), abi.encode(_ctx(invId, requester, escrow, block.timestamp + 1 hours)));
+        hook.beforeSwap(
+            requester, _key(), _params(), abi.encode(_ctx(invId, requester, escrow, block.timestamp + 1 hours))
+        );
     }
 
     function test_revert_notWhitelisted() public {
@@ -155,16 +203,31 @@ contract GuardHookTest is Test {
 
     function test_revert_invoiceNotFunded() public {
         vm.prank(poolManager);
-        vm.expectRevert(abi.encodeWithSelector(RecibuSettlementGuardHook.InvoiceNotFunded.selector, bytes32(uint256(9999))));
-        hook.beforeSwap(requester, _key(), _params(), abi.encode(_ctx(9999, requester, escrow, block.timestamp + 1 hours)));
+        vm.expectRevert(
+            abi.encodeWithSelector(RecibuSettlementGuardHook.InvoiceNotFunded.selector, bytes32(uint256(9999)))
+        );
+        hook.beforeSwap(
+            requester, _key(), _params(), abi.encode(_ctx(9999, requester, escrow, block.timestamp + 1 hours))
+        );
     }
 
     function test_revert_frozenWorkspace() public {
         // second invoice, same seller but a fresh debtor (concentration cap is per-debtor);
         // default IT to freeze the seller, leaving invId Funded.
         uint256 debtor2 = _ws("debtor2", 74, 87);
+        uint64 firstMaturity = uint64(block.timestamp + 30 days);
         vm.prank(servicer);
-        uint256 inv2 = shelf.lockInvoice(seller, debtor2, 100e6, 2, uint64(block.timestamp + 30 days), 30 days, _docs());
+        uint256 inv2 = shelf.lockInvoice(
+            seller,
+            debtor2,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            _terms(keccak256("ARCA:guard:default"), firstMaturity),
+            _evidence(keccak256("ARCA:guard:default")),
+            _docs()
+        );
         vm.warp(block.timestamp + 30 days + Params.GRACE_STRONG + 1);
         vm.prank(servicer);
         shelf.markDefaulted(inv2);
@@ -172,14 +235,18 @@ contract GuardHookTest is Test {
 
         vm.prank(poolManager);
         vm.expectRevert(abi.encodeWithSelector(RecibuSettlementGuardHook.WorkspaceFrozen.selector, seller));
-        hook.beforeSwap(requester, _key(), _params(), abi.encode(_ctx(invId, requester, escrow, block.timestamp + 1 hours)));
+        hook.beforeSwap(
+            requester, _key(), _params(), abi.encode(_ctx(invId, requester, escrow, block.timestamp + 1 hours))
+        );
     }
 
     function test_revert_badRecipient() public {
         address evil = makeAddr("evil");
         vm.prank(poolManager);
         vm.expectRevert(abi.encodeWithSelector(RecibuSettlementGuardHook.BadRecipient.selector, evil));
-        hook.beforeSwap(requester, _key(), _params(), abi.encode(_ctx(invId, requester, evil, block.timestamp + 1 hours)));
+        hook.beforeSwap(
+            requester, _key(), _params(), abi.encode(_ctx(invId, requester, evil, block.timestamp + 1 hours))
+        );
     }
 
     function test_revert_deadlinePassed() public {
@@ -196,7 +263,9 @@ contract GuardHookTest is Test {
         uint256 staleAt = block.timestamp - hook.maxOracleAge() - 1;
         vm.prank(poolManager);
         vm.expectRevert(abi.encodeWithSelector(RecibuSettlementGuardHook.StaleOracle.selector, staleAt));
-        hook.beforeSwap(requester, _key(), _params(), abi.encode(_ctx(invId, requester, escrow, block.timestamp + 1 hours)));
+        hook.beforeSwap(
+            requester, _key(), _params(), abi.encode(_ctx(invId, requester, escrow, block.timestamp + 1 hours))
+        );
     }
 
     function test_revert_deviationTooHigh() public {
@@ -221,7 +290,8 @@ contract GuardHookTest is Test {
         hook.afterSwap(requester, _key(), _params(), int256(0), abi.encode(c));
 
         // bad recipient rejected post-swap too
-        RecibuSettlementGuardHook.RecibuSwapContext memory bad = _ctx(invId, requester, makeAddr("x"), block.timestamp + 1 hours);
+        RecibuSettlementGuardHook.RecibuSwapContext memory bad =
+            _ctx(invId, requester, makeAddr("x"), block.timestamp + 1 hours);
         vm.prank(poolManager);
         vm.expectRevert(abi.encodeWithSelector(RecibuSettlementGuardHook.BadRecipient.selector, bad.recipient));
         hook.afterSwap(requester, _key(), _params(), int256(0), abi.encode(bad));

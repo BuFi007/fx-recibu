@@ -9,6 +9,8 @@ import {WorkspaceTierRegistry} from "../../src/credit/WorkspaceTierRegistry.sol"
 import {InvoiceShelf} from "../../src/invoice/InvoiceShelf.sol";
 import {BINV} from "../../src/invoice/BINV.sol";
 import {Params} from "../../src/libraries/Params.sol";
+import {ReceivableCommitment} from "../../src/libraries/ReceivableCommitment.sol";
+import {FactoringEvidenceV1} from "../../src/libraries/FactoringEvidenceV1.sol";
 
 contract InvUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
@@ -36,6 +38,7 @@ contract ShelfHandler is Test {
     address internal servicer;
 
     uint256[] public liveInvoices;
+    uint256 public authorityNonce;
 
     constructor(
         InvoiceShelf _shelf,
@@ -61,8 +64,20 @@ contract ShelfHandler is Test {
         uint256 seller = sellers[sSeed % sellers.length];
         uint256 debtor = debtors[dSeed % debtors.length];
         face = uint128(bound(face, 10e6, 400e6));
+        uint64 firstMaturity = uint64(block.timestamp + 30 days);
+        bytes32 authorityId = keccak256(abi.encode("INVARIANT_AUTHORITY_INVOICE", ++authorityNonce));
+        ReceivableCommitment.Terms memory terms = ReceivableCommitment.Terms({
+            canonicalInvoiceCommitmentHash: authorityId,
+            issuedAt: uint64(block.timestamp),
+            dueAt: firstMaturity + 30 days
+        });
+        FactoringEvidenceV1 memory evidence = FactoringEvidenceV1({
+            featureRootHash: keccak256(abi.encode("FEATURE_ROOT", authorityId)),
+            currentSnapshotHash: keccak256(abi.encode("CURRENT_SNAPSHOT", authorityId)),
+            privateTermsHash: keccak256(abi.encode("PRIVATE_TERMS", authorityId))
+        });
         vm.prank(servicer);
-        try shelf.lockInvoice(seller, debtor, face, 2, uint64(block.timestamp + 30 days), 30 days, _docs()) returns (
+        try shelf.lockInvoice(seller, debtor, face, 2, firstMaturity, 30 days, terms, evidence, _docs()) returns (
             uint256 id
         ) {
             liveInvoices.push(id);
@@ -137,8 +152,10 @@ contract ShelfInvariantsTest is Test {
         uint256[] memory debtors = new uint256[](3);
         for (uint256 i = 0; i < 3; ++i) {
             vm.startPrank(issuer);
-            sellers[i] = identity.registerWorkspace(keccak256(abi.encode("seller", i)), makeAddr(string(abi.encode("s", i))));
-            debtors[i] = identity.registerWorkspace(keccak256(abi.encode("debtor", i)), makeAddr(string(abi.encode("d", i))));
+            sellers[i] =
+                identity.registerWorkspace(keccak256(abi.encode("seller", i)), makeAddr(string(abi.encode("s", i))));
+            debtors[i] =
+                identity.registerWorkspace(keccak256(abi.encode("debtor", i)), makeAddr(string(abi.encode("d", i))));
             identity.setKybStatus(sellers[i], true);
             identity.setKybStatus(debtors[i], true);
             vm.stopPrank();
@@ -202,5 +219,31 @@ contract ShelfInvariantsTest is Test {
             shelf.totalLiquid() + shelf.totalHoldbackHeld(),
             "I3b: USDC balance != liquid + held holdback"
         );
+    }
+
+    /// @notice I4 — every successfully funded invoice permanently owns one unique,
+    ///         nonzero canonical receivable commitment.
+    function invariant_receivableCommitmentsAreInjective() public view {
+        uint256 nextId = shelf.nextInvoiceId();
+        for (uint256 invoiceId = 1; invoiceId < nextId; ++invoiceId) {
+            bytes32 commitment = shelf.receivableCommitmentOf(invoiceId);
+            bytes32 authorityInvoiceId = shelf.authorityInvoiceIdOf(invoiceId);
+            assertNotEq(commitment, bytes32(0), "I4: funded invoice missing commitment");
+            assertNotEq(authorityInvoiceId, bytes32(0), "I4: funded invoice missing authority ID");
+            assertEq(
+                shelf.invoiceIdOfReceivableCommitment(commitment),
+                invoiceId,
+                "I4: commitment points to different invoice"
+            );
+            assertEq(
+                shelf.invoiceIdOfAuthorityInvoiceId(authorityInvoiceId),
+                invoiceId,
+                "I4: authority ID points to different invoice"
+            );
+            for (uint256 otherId = invoiceId + 1; otherId < nextId; ++otherId) {
+                assertNotEq(commitment, shelf.receivableCommitmentOf(otherId), "I4: duplicate commitment");
+                assertNotEq(authorityInvoiceId, shelf.authorityInvoiceIdOf(otherId), "I4: duplicate authority ID");
+            }
+        }
     }
 }

@@ -21,6 +21,8 @@ import {
 } from "../../src/rails/FactoringSettlementExtractor.sol";
 import {IInvoiceShelf} from "../../src/interfaces/IInvoiceShelf.sol";
 import {IReceiver} from "../../src/interfaces/IReceiver.sol";
+import {ReceivableCommitment} from "../../src/libraries/ReceivableCommitment.sol";
+import {FactoringEvidenceV1} from "../../src/libraries/FactoringEvidenceV1.sol";
 
 contract ExtractorUSDC is ERC20 {
     constructor(string memory name_, string memory symbol_) ERC20(name_, symbol_) {}
@@ -46,6 +48,7 @@ contract FactoringSettlementExtractorTest is Test {
     uint64 internal constant ARC_CHAIN_SELECTOR = 3_034_092_155_422_581_607;
     uint128 internal constant FACE = 500e6;
     uint128 internal constant LOCK_FACE = 20e6;
+    bytes32 internal constant LOCK_CANONICAL_INVOICE_HASH = keccak256("ARCA:extractor:canonical-invoice");
 
     ExtractorUSDC internal usdc;
     BUFIIdentityRegistry internal identity;
@@ -109,8 +112,19 @@ contract FactoringSettlementExtractorTest is Test {
         shelf.depositTranche(2, 1_000_000e6);
         vm.stopPrank();
 
+        uint64 firstMaturity = uint64(block.timestamp + 30 days);
         vm.prank(servicer);
-        invoiceId = shelf.lockInvoice(seller, debtor, FACE, 2, uint64(block.timestamp + 30 days), 30 days, _docs());
+        invoiceId = shelf.lockInvoice(
+            seller,
+            debtor,
+            FACE,
+            2,
+            firstMaturity,
+            30 days,
+            _terms(keccak256("ARCA:extractor:seed"), firstMaturity, 2),
+            _evidence(keccak256("ARCA:extractor:seed")),
+            _docs()
+        );
 
         usdc.mint(payer, 1_000_000e6);
         vm.prank(payer);
@@ -396,6 +410,21 @@ contract FactoringSettlementExtractorTest is Test {
         assertEq(stored.paymentInstructionHash, docs.paymentInstructionHash);
         assertEq(stored.servicingPolicyHash, docs.servicingPolicyHash);
         assertEq(stored.disputePolicyHash, docs.disputePolicyHash);
+        bytes32 expectedCommitment = shelf.computeReceivableCommitment(
+            seller,
+            debtor,
+            LOCK_FACE,
+            _terms(LOCK_CANONICAL_INVOICE_HASH, uint64(block.timestamp + 60 days), 2),
+            docs.assignmentHash
+        );
+        assertEq(shelf.receivableCommitmentOf(expectedInvoiceId), expectedCommitment);
+        assertEq(shelf.invoiceIdOfReceivableCommitment(expectedCommitment), expectedInvoiceId);
+        FactoringEvidenceV1 memory evidence = _evidence(LOCK_CANONICAL_INVOICE_HASH);
+        (bytes32 featureRootHash, bytes32 currentSnapshotHash, bytes32 privateTermsHash) =
+            shelf.factoringEvidenceOf(expectedInvoiceId);
+        assertEq(featureRootHash, evidence.featureRootHash);
+        assertEq(currentSnapshotHash, evidence.currentSnapshotHash);
+        assertEq(privateTermsHash, evidence.privateTermsHash);
         assertTrue(extractor.processed(operationId));
     }
 
@@ -411,6 +440,98 @@ contract FactoringSettlementExtractorTest is Test {
         _callOnReport(address(shelf), inner);
         assertEq(shelf.nextInvoiceId(), nextAfterFirst);
         assertEq(usdc.balanceOf(sellerOwner), sellerBalanceAfterFirst);
+    }
+
+    function test_distinctOperationsCannotFinanceSameReceivableTwice() public {
+        bytes32 opA = keccak256("lock-receivable-a");
+        bytes32 opB = keccak256("lock-receivable-b");
+        uint64 firstMaturity = uint64(block.timestamp + 60 days);
+        BINV.DocBundle memory docsA = _lockDocs();
+        _callOnReport(address(shelf), _lockInner(opA, address(usdc), seller, debtor, 2, firstMaturity, docsA));
+
+        uint256 fundedInvoiceId = shelf.nextInvoiceId() - 1;
+        uint256 nextAfterFirst = shelf.nextInvoiceId();
+        uint256 sellerBalanceAfterFirst = usdc.balanceOf(sellerOwner);
+        uint256 exposureAfterFirst = shelf.outstandingOf(seller);
+        bytes32 commitment = shelf.receivableCommitmentOf(fundedInvoiceId);
+
+        BINV.DocBundle memory docsB = _lockDocs();
+        docsB.servicingPolicyHash = keccak256("changed-ancillary-servicing-policy");
+        vm.expectRevert(
+            abi.encodeWithSelector(InvoiceShelf.ReceivableAlreadyConsumed.selector, commitment, fundedInvoiceId)
+        );
+        _callOnReport(address(shelf), _lockInner(opB, address(usdc), seller, debtor, 2, firstMaturity, docsB));
+
+        assertFalse(extractor.processed(opB));
+        assertEq(shelf.nextInvoiceId(), nextAfterFirst);
+        assertEq(usdc.balanceOf(sellerOwner), sellerBalanceAfterFirst);
+        assertEq(shelf.outstandingOf(seller), exposureAfterFirst);
+        assertEq(shelf.invoiceIdOfReceivableCommitment(commitment), fundedInvoiceId);
+    }
+
+    function test_distinctOperationsCannotReuseAuthorityInvoiceWithChangedAssignment() public {
+        bytes32 opA = keccak256("lock-authority-a");
+        bytes32 opB = keccak256("lock-authority-b");
+        uint64 firstMaturity = uint64(block.timestamp + 60 days);
+        BINV.DocBundle memory docsA = _lockDocs();
+        _callOnReport(address(shelf), _lockInner(opA, address(usdc), seller, debtor, 2, firstMaturity, docsA));
+
+        uint256 fundedInvoiceId = shelf.nextInvoiceId() - 1;
+        uint256 nextAfterFirst = shelf.nextInvoiceId();
+        uint256 sellerBalanceAfterFirst = usdc.balanceOf(sellerOwner);
+        uint256 exposureAfterFirst = shelf.outstandingOf(seller);
+        bytes32 firstCommitment = shelf.receivableCommitmentOf(fundedInvoiceId);
+
+        uint64 revisedFirstMaturity = firstMaturity + 1 days;
+        BINV.DocBundle memory docsB = _lockDocs();
+        docsB.assignmentHash = keccak256("changed-assignment-for-same-authority-invoice");
+        FactoringEvidenceV1 memory revisedEvidence = _evidence(LOCK_CANONICAL_INVOICE_HASH);
+        revisedEvidence.currentSnapshotHash = keccak256("revised-current-snapshot");
+        revisedEvidence.privateTermsHash = keccak256("revised-private-terms");
+        bytes32 changedCommitment = shelf.computeReceivableCommitment(
+            seller,
+            debtor,
+            LOCK_FACE,
+            _terms(LOCK_CANONICAL_INVOICE_HASH, revisedFirstMaturity, 2),
+            docsB.assignmentHash
+        );
+        assertNotEq(changedCommitment, firstCommitment);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                InvoiceShelf.AuthorityInvoiceAlreadyConsumed.selector,
+                shelf.computeAuthorityInvoiceId(LOCK_CANONICAL_INVOICE_HASH),
+                fundedInvoiceId
+            )
+        );
+        _callOnReport(
+            address(shelf),
+            _lockInnerWithEvidence(opB, address(usdc), seller, debtor, 2, revisedFirstMaturity, revisedEvidence, docsB)
+        );
+
+        assertFalse(extractor.processed(opB));
+        assertEq(shelf.nextInvoiceId(), nextAfterFirst);
+        assertEq(usdc.balanceOf(sellerOwner), sellerBalanceAfterFirst);
+        assertEq(shelf.outstandingOf(seller), exposureAfterFirst);
+        assertEq(
+            shelf.invoiceIdOfAuthorityInvoiceId(shelf.computeAuthorityInvoiceId(LOCK_CANONICAL_INVOICE_HASH)),
+            fundedInvoiceId
+        );
+        assertEq(shelf.invoiceIdOfReceivableCommitment(changedCommitment), 0);
+    }
+
+    function test_lockRejectsIncompleteFactoringEvidenceWithoutConsumingOperation() public {
+        bytes32 op = keccak256("lock-zero-evidence");
+        uint64 firstMaturity = uint64(block.timestamp + 60 days);
+        FactoringEvidenceV1 memory evidence = _evidence(LOCK_CANONICAL_INVOICE_HASH);
+        evidence.currentSnapshotHash = bytes32(0);
+
+        vm.expectRevert(InvoiceShelf.IncompleteFactoringEvidence.selector);
+        _callOnReport(
+            address(shelf),
+            _lockInnerWithEvidence(op, address(usdc), seller, debtor, 2, firstMaturity, evidence, _lockDocs())
+        );
+        assertFalse(extractor.processed(op));
     }
 
     function test_lockRejectsWrongTokenBadScheduleAndIneligibleParty() public {
@@ -693,10 +814,61 @@ contract FactoringSettlementExtractorTest is Test {
         uint64 firstMaturity,
         BINV.DocBundle memory docs
     ) internal view returns (bytes memory) {
+        return _lockInnerWithEvidence(
+            operationId,
+            token,
+            sellerAgentId,
+            debtorAgentId,
+            nInstallments,
+            firstMaturity,
+            _evidence(LOCK_CANONICAL_INVOICE_HASH),
+            docs
+        );
+    }
+
+    function _lockInnerWithEvidence(
+        bytes32 operationId,
+        address token,
+        uint256 sellerAgentId,
+        uint256 debtorAgentId,
+        uint8 nInstallments,
+        uint64 firstMaturity,
+        FactoringEvidenceV1 memory evidence,
+        BINV.DocBundle memory docs
+    ) internal view returns (bytes memory) {
         bytes memory payload = abi.encode(
-            token, sellerAgentId, debtorAgentId, LOCK_FACE, nInstallments, firstMaturity, uint32(30 days), docs
+            token,
+            sellerAgentId,
+            debtorAgentId,
+            LOCK_FACE,
+            nInstallments,
+            firstMaturity,
+            uint32(30 days),
+            _terms(LOCK_CANONICAL_INVOICE_HASH, firstMaturity, nInstallments),
+            evidence,
+            docs
         );
         return _inner(uint8(2), ARC_CHAIN_SELECTOR, operationId, _deadline(), payload);
+    }
+
+    function _terms(bytes32 authorityId, uint64 firstMaturity, uint8 nInstallments)
+        internal
+        view
+        returns (ReceivableCommitment.Terms memory)
+    {
+        return ReceivableCommitment.Terms({
+            canonicalInvoiceCommitmentHash: authorityId,
+            issuedAt: uint64(block.timestamp),
+            dueAt: uint64(uint256(firstMaturity) + uint256(nInstallments - 1) * 30 days)
+        });
+    }
+
+    function _evidence(bytes32 seed) internal pure returns (FactoringEvidenceV1 memory) {
+        return FactoringEvidenceV1({
+            featureRootHash: keccak256(abi.encode("FEATURE_ROOT", seed)),
+            currentSnapshotHash: keccak256(abi.encode("CURRENT_SNAPSHOT", seed)),
+            privateTermsHash: keccak256(abi.encode("PRIVATE_TERMS", seed))
+        });
     }
 
     function _defaultInner(bytes32 operationId, uint256 id, uint64 validUntil) internal pure returns (bytes memory) {

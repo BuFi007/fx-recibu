@@ -10,6 +10,8 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 import {BINV} from "../invoice/BINV.sol";
 import {IReceiver} from "../interfaces/IReceiver.sol";
+import {ReceivableCommitment} from "../libraries/ReceivableCommitment.sol";
+import {FactoringEvidenceV1} from "../libraries/FactoringEvidenceV1.sol";
 
 interface IInvoiceSettlementTarget {
     function settle(uint256 invoiceId) external returns (uint256 amount);
@@ -28,6 +30,8 @@ interface IInvoiceShelfTarget {
         uint8 nInstallments,
         uint64 firstMaturity,
         uint32 interval,
+        ReceivableCommitment.Terms calldata terms,
+        FactoringEvidenceV1 calldata evidence,
         BINV.DocBundle calldata docs
     ) external returns (uint256 invoiceId);
 
@@ -59,7 +63,9 @@ interface IReceivableEscrowTokenView {
 ///   SETTLE  (1): abi.encode(address token, uint256 invoiceId, uint8 installment, bytes32 memoId)
 ///   LOCK    (2): abi.encode(address token, uint256 sellerAgentId, uint256 debtorAgentId,
 ///                           uint128 face, uint8 nInstallments, uint64 firstMaturity,
-///                           uint32 interval, BINV.DocBundle docs)
+///                           uint32 interval, ReceivableCommitment.Terms terms
+///                           (canonicalInvoiceCommitmentHash, issuedAt, dueAt),
+///                           FactoringEvidenceV1 evidence, BINV.DocBundle docs)
 ///   DEFAULT (3): abi.encode(uint256 invoiceId)
 ///
 /// @dev `writeReport.receiver` MUST be this extractor. `target` belongs inside the
@@ -257,12 +263,29 @@ contract FactoringSettlementExtractor is IReceiver, ERC165, Ownable2Step, Pausab
             uint8 nInstallments,
             uint64 firstMaturity,
             uint32 interval,
+            ReceivableCommitment.Terms memory terms,
+            FactoringEvidenceV1 memory evidence,
             BINV.DocBundle memory docs
-        ) = abi.decode(actionPayload, (address, uint256, uint256, uint128, uint8, uint64, uint32, BINV.DocBundle));
+        ) = abi.decode(
+            actionPayload,
+            (
+                address,
+                uint256,
+                uint256,
+                uint128,
+                uint8,
+                uint64,
+                uint32,
+                ReceivableCommitment.Terms,
+                FactoringEvidenceV1,
+                BINV.DocBundle
+            )
+        );
         if (token != SHELF_TOKEN) revert UnexpectedToken(ACTION_LOCK, token, SHELF_TOKEN);
 
-        uint256 invoiceId =
-            SHELF.lockInvoice(sellerAgentId, debtorAgentId, face, nInstallments, firstMaturity, interval, docs);
+        uint256 invoiceId = SHELF.lockInvoice(
+            sellerAgentId, debtorAgentId, face, nInstallments, firstMaturity, interval, terms, evidence, docs
+        );
         emit InvoiceLockExecuted(operationId, target, invoiceId);
     }
 

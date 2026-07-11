@@ -6,6 +6,11 @@
 
 A contract MUST NOT mark an invoice as legally assigned unless the authorized issuer/servicer has attested the required document hashes (enforced in `InvoiceShelf.lockInvoice` via the bINV doc-hash bundle).
 
+The document bundle is audit evidence, not the economic uniqueness key. The
+versioned identity and permanent single-consumption rule are specified in
+[`RECEIVABLE_COMMITMENT_V1.md`](./RECEIVABLE_COMMITMENT_V1.md). Recording either
+hash does not itself create a legal assignment.
+
 ## Required off-chain document hashes per funded invoice
 
 | Field | Content addressed |
@@ -29,4 +34,11 @@ The servicer (BUFI operating entity) holds: document attestation authority (issu
 
 ## Jurisdiction notes (Argentina v1)
 
-v1 operates on contractual assignment without factura-electrónica integration; an AFIP/comprobante verification adapter is committed before ARS-corridor scale (SPEC §8.3.8). Points of counsel review before launch: enforceability of e-signed assignments, debtor-notice requirements, and the tax treatment of discount/fee income. This document is an engineering constraint map, not legal advice — counsel signs off, not this file.
+v1 can bind a privacy-preserving authority invoice ID and Fantasmita/CRE
+evidence roots, but these contracts do not call ARCA or independently issue or
+validate a Factura E. The upstream adapter and DON workflow must authenticate
+that evidence before the authorized extractor submits a LOCK. Points of
+counsel review before launch: enforceability of e-signed assignments,
+debtor-notice requirements, and the tax treatment of discount/fee income. This
+document is an engineering constraint map, not legal advice — counsel signs
+off, not this file.

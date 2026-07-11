@@ -7,6 +7,8 @@ import {BUFIReputationRegistry} from "../../src/identity/BUFIReputationRegistry.
 import {WorkspaceTierRegistry} from "../../src/credit/WorkspaceTierRegistry.sol";
 import {InvoiceShelf} from "../../src/invoice/InvoiceShelf.sol";
 import {BINV} from "../../src/invoice/BINV.sol";
+import {ReceivableCommitment} from "../../src/libraries/ReceivableCommitment.sol";
+import {FactoringEvidenceV1} from "../../src/libraries/FactoringEvidenceV1.sol";
 import {ReceivableEscrow} from "../../src/rails/ReceivableEscrow.sol";
 import {RecibuMemoRouter} from "../../src/rails/RecibuMemoRouter.sol";
 import {IInvoiceShelf} from "../../src/interfaces/IInvoiceShelf.sol";
@@ -95,8 +97,19 @@ contract RecibuMemoRouterTest is Test {
         shelf.depositTranche(2, 1_000_000e6);
         vm.stopPrank();
 
+        uint64 firstMaturity = uint64(block.timestamp + 30 days);
         vm.prank(servicer);
-        invId = shelf.lockInvoice(seller, debtor, FACE, 2, uint64(block.timestamp + 30 days), 30 days, _docs());
+        invId = shelf.lockInvoice(
+            seller,
+            debtor,
+            FACE,
+            2,
+            firstMaturity,
+            30 days,
+            _terms(keccak256("ARCA:memo-router:primary"), firstMaturity),
+            _evidence(keccak256("ARCA:memo-router:primary")),
+            _docs()
+        );
 
         // Fund the payer in every token.
         usdc.mint(payer, 1_000_000e6);
@@ -266,5 +279,25 @@ contract RecibuMemoRouterTest is Test {
 
     function _docs() internal pure returns (BINV.DocBundle memory) {
         return BINV.DocBundle(bytes32("i"), bytes32("a"), bytes32("p"), bytes32("s"), bytes32("d"));
+    }
+
+    function _terms(bytes32 authorityId, uint64 firstMaturity)
+        internal
+        view
+        returns (ReceivableCommitment.Terms memory)
+    {
+        return ReceivableCommitment.Terms({
+            canonicalInvoiceCommitmentHash: authorityId,
+            issuedAt: uint64(block.timestamp),
+            dueAt: firstMaturity + 30 days
+        });
+    }
+
+    function _evidence(bytes32 seed) internal pure returns (FactoringEvidenceV1 memory) {
+        return FactoringEvidenceV1({
+            featureRootHash: keccak256(abi.encode("FEATURE_ROOT", seed)),
+            currentSnapshotHash: keccak256(abi.encode("CURRENT_SNAPSHOT", seed)),
+            privateTermsHash: keccak256(abi.encode("PRIVATE_TERMS", seed))
+        });
     }
 }

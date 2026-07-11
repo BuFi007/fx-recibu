@@ -10,6 +10,8 @@ import {InvoiceShelf} from "../../src/invoice/InvoiceShelf.sol";
 import {BUFIOracle} from "../../src/invoice/BUFIOracle.sol";
 import {WorkspaceOperatingReserve} from "../../src/rails/WorkspaceOperatingReserve.sol";
 import {BINV} from "../../src/invoice/BINV.sol";
+import {ReceivableCommitment} from "../../src/libraries/ReceivableCommitment.sol";
+import {FactoringEvidenceV1} from "../../src/libraries/FactoringEvidenceV1.sol";
 import {Params} from "../../src/libraries/Params.sol";
 
 contract MockUSDC2 is ERC20 {
@@ -98,11 +100,42 @@ contract OracleAndReserveTest is Test {
     }
 
     function _lockDefaultable() internal returns (uint256 id) {
+        uint64 firstMaturity = uint64(block.timestamp + 30 days);
         vm.prank(servicer);
-        id = shelf.lockInvoice(seller, debtor, 500e6, 2, uint64(block.timestamp + 30 days), 30 days, _docs());
+        id = shelf.lockInvoice(
+            seller,
+            debtor,
+            500e6,
+            2,
+            firstMaturity,
+            30 days,
+            _terms(keccak256("ARCA:oracle:defaultable"), firstMaturity),
+            _evidence(keccak256("ARCA:oracle:defaultable")),
+            _docs()
+        );
         vm.prank(servicer);
         shelf.applyPayment(id, 250e6); // installment 1 on time; outstanding 175
         vm.warp(block.timestamp + 60 days + Params.GRACE_STRONG + 1); // miss installment 2
+    }
+
+    function _terms(bytes32 authorityId, uint64 firstMaturity)
+        internal
+        view
+        returns (ReceivableCommitment.Terms memory)
+    {
+        return ReceivableCommitment.Terms({
+            canonicalInvoiceCommitmentHash: authorityId,
+            issuedAt: uint64(block.timestamp),
+            dueAt: firstMaturity + 30 days
+        });
+    }
+
+    function _evidence(bytes32 seed) internal pure returns (FactoringEvidenceV1 memory) {
+        return FactoringEvidenceV1({
+            featureRootHash: keccak256(abi.encode("FEATURE_ROOT", seed)),
+            currentSnapshotHash: keccak256(abi.encode("CURRENT_SNAPSHOT", seed)),
+            privateTermsHash: keccak256(abi.encode("PRIVATE_TERMS", seed))
+        });
     }
 
     // ── M3b: NAV oracle (SPEC §6 worked examples, adapted to live numbers) ──
@@ -145,8 +178,19 @@ contract OracleAndReserveTest is Test {
         BUFIOracle o2 = new BUFIOracle(shelf2, 2, admin);
         o2.observe();
 
+        uint64 firstMaturity = uint64(block.timestamp + 30 days);
         vm.prank(servicer);
-        uint256 id = shelf2.lockInvoice(seller, debtor, 500e6, 2, uint64(block.timestamp + 30 days), 30 days, _docs());
+        uint256 id = shelf2.lockInvoice(
+            seller,
+            debtor,
+            500e6,
+            2,
+            firstMaturity,
+            30 days,
+            _terms(keccak256("ARCA:oracle:shelf2"), firstMaturity),
+            _evidence(keccak256("ARCA:oracle:shelf2")),
+            _docs()
+        );
         vm.prank(servicer);
         shelf2.applyPayment(id, 250e6);
         vm.warp(block.timestamp + 60 days + Params.GRACE_STRONG + 1);
@@ -178,9 +222,12 @@ contract OracleAndReserveTest is Test {
         uint256 weakSeller = _newWorkspace("weak", weakOwner, 30, 30); // Developing seller
         // advance rate keys on the DEBTOR (87=Excellent 90%, −5% no-pair = 85%): 400×85% = 340
         // required floor = 340 × 25% reserve × 100% bond = 85
+        uint64 firstMaturity = uint64(block.timestamp + 30 days);
+        ReceivableCommitment.Terms memory terms = _terms(keccak256("ARCA:reserve:weak"), firstMaturity);
+        FactoringEvidenceV1 memory evidence = _evidence(keccak256("ARCA:reserve:weak"));
         vm.prank(servicer);
         vm.expectRevert(abi.encodeWithSelector(InvoiceShelf.BondNotPosted.selector, 85e6, 0));
-        shelf.lockInvoice(weakSeller, debtor, 400e6, 2, uint64(block.timestamp + 30 days), 30 days, _docs());
+        shelf.lockInvoice(weakSeller, debtor, 400e6, 2, firstMaturity, 30 days, terms, evidence, _docs());
 
         // post the bond → lock succeeds
         usdc.mint(weakOwner, 100e6);
@@ -189,7 +236,7 @@ contract OracleAndReserveTest is Test {
         reserve.postBond(weakSeller, 85e6);
         vm.stopPrank();
         vm.prank(servicer);
-        shelf.lockInvoice(weakSeller, debtor, 400e6, 2, uint64(block.timestamp + 30 days), 30 days, _docs());
+        shelf.lockInvoice(weakSeller, debtor, 400e6, 2, firstMaturity, 30 days, terms, evidence, _docs());
         assertEq(reserve.requiredOf(weakSeller), 85e6);
     }
 
