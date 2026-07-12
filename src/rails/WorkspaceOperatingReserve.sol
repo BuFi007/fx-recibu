@@ -67,6 +67,7 @@ contract WorkspaceOperatingReserve is AccessControl {
     ///         The shelf zeroes `requiredOf` only when the workspace has no exposure and
     ///         is not frozen, so first-loss capital can never front-run a default.
     function withdrawSurplus(uint256 agentId, address to, uint256 amount) external onlyRole(SHELF_ROLE) {
+        if (amount == 0) revert ZeroAmount();
         uint256 bal = balanceOf[agentId];
         if (bal < amount || bal - amount < requiredOf[agentId]) revert BelowRequired(bal, requiredOf[agentId]);
         balanceOf[agentId] = bal - amount;

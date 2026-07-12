@@ -6,6 +6,7 @@ import {BUFIIdentityRegistry} from "../../src/identity/BUFIIdentityRegistry.sol"
 import {BUFIReputationRegistry} from "../../src/identity/BUFIReputationRegistry.sol";
 import {IBUFIIdentityRegistry} from "../../src/interfaces/IBUFIIdentityRegistry.sol";
 import {IBUFIReputationRegistry} from "../../src/interfaces/IBUFIReputationRegistry.sol";
+import {Params} from "../../src/libraries/Params.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 contract IdentityTest is Test {
@@ -75,6 +76,38 @@ contract IdentityTest is Test {
         identity.setKybStatus(id, false);
     }
 
+    function test_kybCredentialExpiresAndVersions() public {
+        uint256 id = _register();
+        vm.prank(issuer);
+        identity.setKybStatus(id, true, uint64(block.timestamp + 10), 1, bytes32("op1"));
+        assertTrue(identity.kybApproved(id));
+        vm.warp(block.timestamp + 11);
+        assertFalse(identity.kybApproved(id));
+        vm.prank(issuer);
+        vm.expectRevert(abi.encodeWithSelector(BUFIIdentityRegistry.StaleKybVersion.selector, 1, 1));
+        identity.setKybStatus(id, false, 0, 1, bytes32("op1"));
+    }
+
+    function test_legacyKybWriteClearsPriorDonOperationProvenance() public {
+        uint256 id = _register();
+        bytes32 donOperationId = keccak256("don-kyb-operation");
+
+        vm.prank(issuer);
+        identity.setKybStatus(id, true, uint64(block.timestamp + 30 days), 7, donOperationId);
+
+        vm.warp(block.timestamp + 1);
+        vm.prank(issuer);
+        identity.setKybStatus(id, false);
+
+        (bool approved, uint64 observedAt, uint64 validUntil, uint64 version, bytes32 operationId) =
+            identity.kybState(id);
+        assertFalse(approved);
+        assertEq(observedAt, uint64(block.timestamp));
+        assertEq(validUntil, 0);
+        assertEq(version, 8);
+        assertEq(operationId, bytes32(0));
+    }
+
     // ── reputation write-path law ──
 
     function test_setScore_onlyAttestor_andRangeChecked() public {
@@ -98,14 +131,19 @@ contract IdentityTest is Test {
     function test_paidOnTime_onlySettlement_andMonotonic() public {
         uint256 id = _register();
         vm.prank(settlement);
-        reputation.recordOnTimeInstallment(id);
+        assertTrue(reputation.recordOnTimeInstallment(id, Params.RAMP_STEP_USDC));
         vm.prank(settlement);
-        reputation.recordOnTimeInstallment(id);
+        assertFalse(reputation.recordOnTimeInstallment(id, Params.RAMP_STEP_USDC), "epoch slope cap");
+        assertEq(reputation.paidOnTimeCumulative(id), 1);
+
+        vm.warp(block.timestamp + Params.EPOCH_LENGTH);
+        vm.prank(settlement);
+        assertTrue(reputation.recordOnTimeInstallment(id, Params.RAMP_STEP_USDC));
         assertEq(reputation.paidOnTimeCumulative(id), 2);
 
         vm.prank(attestor); // attestor may NOT touch realized repayment
         vm.expectRevert();
-        reputation.recordOnTimeInstallment(id);
+        reputation.recordOnTimeInstallment(id, Params.RAMP_STEP_USDC);
     }
 
     function test_permanentDefault_isTerminal() public {
@@ -120,7 +158,7 @@ contract IdentityTest is Test {
         reputation.setScore(id, 90, 90, 2, bytes32(0));
         vm.prank(settlement);
         vm.expectRevert(abi.encodeWithSelector(BUFIReputationRegistry.AgentPermanentlyDefaulted.selector, id));
-        reputation.recordOnTimeInstallment(id);
+        reputation.recordOnTimeInstallment(id, Params.RAMP_STEP_USDC);
 
         vm.prank(rando);
         vm.expectRevert();

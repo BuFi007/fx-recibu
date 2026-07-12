@@ -3,12 +3,15 @@ pragma solidity 0.8.26;
 
 import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
 import {BUFIIdentityRegistry} from "../../src/identity/BUFIIdentityRegistry.sol";
 import {BUFIReputationRegistry} from "../../src/identity/BUFIReputationRegistry.sol";
 import {WorkspaceTierRegistry} from "../../src/credit/WorkspaceTierRegistry.sol";
 import {InvoiceShelf} from "../../src/invoice/InvoiceShelf.sol";
 import {BINV} from "../../src/invoice/BINV.sol";
 import {Params} from "../../src/libraries/Params.sol";
+import {ReceivableCommitment} from "../../src/libraries/ReceivableCommitment.sol";
+import {StrictAuthorityFixture, StrictAuthorityInvoiceVerifier} from "../utils/StrictAuthorityInvoiceVerifier.sol";
 
 contract InvUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {}
@@ -22,13 +25,13 @@ contract InvUSDC is ERC20 {
     }
 }
 
-/// @dev Handler: fuzzes the full invoice lifecycle across a fixed roster of KYB'd
-///      workspaces, so the invariant engine explores lock/pay/default interleavings.
+/// @dev Handler fuzzes the lifecycle and records non-vacuous authority coverage.
 contract ShelfHandler is Test {
     InvoiceShelf public shelf;
     BUFIIdentityRegistry public identity;
     BUFIReputationRegistry public reputation;
     WorkspaceTierRegistry public tiers;
+    StrictAuthorityInvoiceVerifier public authorityVerifier;
     InvUSDC public usdc;
 
     uint256[] public sellers;
@@ -36,45 +39,100 @@ contract ShelfHandler is Test {
     address internal servicer;
 
     uint256[] public liveInvoices;
+    bytes32[] public fundedAuthorityIds;
+    uint256[] public fundedInvoiceIds;
+
+    uint256 public lockAttempts;
+    uint256 public successfulLocks;
+    uint256 public duplicateAttempts;
+    uint256 public duplicateGuardReverts;
+    uint256 public duplicateSuccesses;
+    uint256 private authorityFixtureCounter;
+
+    error UnexpectedDuplicateRevert(bytes reason);
 
     constructor(
-        InvoiceShelf _shelf,
-        BUFIIdentityRegistry _identity,
-        BUFIReputationRegistry _reputation,
-        WorkspaceTierRegistry _tiers,
-        InvUSDC _usdc,
-        uint256[] memory _sellers,
-        uint256[] memory _debtors,
-        address _servicer
+        InvoiceShelf shelf_,
+        BUFIIdentityRegistry identity_,
+        BUFIReputationRegistry reputation_,
+        WorkspaceTierRegistry tiers_,
+        StrictAuthorityInvoiceVerifier authorityVerifier_,
+        InvUSDC usdc_,
+        uint256[] memory sellers_,
+        uint256[] memory debtors_,
+        address servicer_
     ) {
-        shelf = _shelf;
-        identity = _identity;
-        reputation = _reputation;
-        tiers = _tiers;
-        usdc = _usdc;
-        sellers = _sellers;
-        debtors = _debtors;
-        servicer = _servicer;
+        shelf = shelf_;
+        identity = identity_;
+        reputation = reputation_;
+        tiers = tiers_;
+        authorityVerifier = authorityVerifier_;
+        usdc = usdc_;
+        sellers = sellers_;
+        debtors = debtors_;
+        servicer = servicer_;
     }
 
-    function lock(uint256 sSeed, uint256 dSeed, uint128 face) external {
-        uint256 seller = sellers[sSeed % sellers.length];
-        uint256 debtor = debtors[dSeed % debtors.length];
-        face = uint128(bound(face, 10e6, 400e6));
+    function seedAuthorityCoverage(uint256 seller, uint256 debtor, uint128 face) external {
+        bytes32 authorityInvoiceId = _nextAuthorityInvoiceId();
+        uint64 firstMaturity = uint64(block.timestamp + 30 days);
+        ReceivableCommitment.FundingTerms memory terms = _terms(authorityInvoiceId);
+        BINV.DocBundle memory docs = _docs(bytes32("seed-a"));
+        _approve(terms, seller, debtor, face, firstMaturity);
+
+        ++lockAttempts;
         vm.prank(servicer);
-        try shelf.lockInvoice(seller, debtor, face, 2, uint64(block.timestamp + 30 days), 30 days, _docs()) returns (
-            uint256 id
+        uint256 originalInvoiceId = shelf.lockInvoice(seller, debtor, face, 2, firstMaturity, 30 days, terms, docs);
+        _recordSuccessfulLock(originalInvoiceId, authorityInvoiceId);
+
+        ReceivableCommitment.FundingTerms memory changedTerms = terms;
+        changedTerms.authority.authorityEvidenceCommitment = keccak256("invariant changed evidence");
+        changedTerms.authority.authorityPaymentDueAt += 1 days;
+        BINV.DocBundle memory changedDocs = _docs(bytes32("seed-b"));
+        _approve(changedTerms, seller, debtor, face, firstMaturity);
+
+        ++lockAttempts;
+        ++duplicateAttempts;
+        vm.prank(servicer);
+        try shelf.lockInvoice(seller, debtor, face, 2, firstMaturity, 30 days, changedTerms, changedDocs) returns (
+            uint256
         ) {
-            liveInvoices.push(id);
+            ++duplicateSuccesses;
+        } catch (bytes memory reason) {
+            bytes memory expected = abi.encodeWithSelector(
+                InvoiceShelf.AuthorityInvoiceAlreadyConsumed.selector, authorityInvoiceId, originalInvoiceId
+            );
+            if (keccak256(reason) != keccak256(expected)) revert UnexpectedDuplicateRevert(reason);
+            ++duplicateGuardReverts;
+        }
+    }
+
+    function lock(uint256 sellerSeed, uint256 debtorSeed, uint128 face) external {
+        uint256 seller = sellers[sellerSeed % sellers.length];
+        uint256 debtor = debtors[debtorSeed % debtors.length];
+        face = uint128(bound(face, 10e6, 400e6));
+        uint64 firstMaturity = uint64(block.timestamp + 30 days);
+        bytes32 authorityInvoiceId = _nextAuthorityInvoiceId();
+        ReceivableCommitment.FundingTerms memory terms = _terms(authorityInvoiceId);
+        _approve(terms, seller, debtor, face, firstMaturity);
+
+        ++lockAttempts;
+        vm.prank(servicer);
+        try shelf.lockInvoice(
+            seller, debtor, face, 2, firstMaturity, 30 days, terms, _docs(authorityInvoiceId)
+        ) returns (
+            uint256 invoiceId
+        ) {
+            _recordSuccessfulLock(invoiceId, authorityInvoiceId);
         } catch {}
     }
 
     function pay(uint256 idSeed, uint128 amount) external {
         if (liveInvoices.length == 0) return;
-        uint256 id = liveInvoices[idSeed % liveInvoices.length];
+        uint256 invoiceId = liveInvoices[idSeed % liveInvoices.length];
         amount = uint128(bound(amount, 1e6, 400e6));
         vm.prank(servicer);
-        try shelf.applyPayment(id, amount) {} catch {}
+        try shelf.applyPayment(invoiceId, amount) {} catch {}
     }
 
     function warp(uint256 dt) external {
@@ -83,30 +141,102 @@ contract ShelfHandler is Test {
 
     function markDefault(uint256 idSeed) external {
         if (liveInvoices.length == 0) return;
-        uint256 id = liveInvoices[idSeed % liveInvoices.length];
+        uint256 invoiceId = liveInvoices[idSeed % liveInvoices.length];
         vm.prank(servicer);
-        try shelf.markDefaulted(id) {} catch {}
+        try shelf.markDefaulted(invoiceId) {} catch {}
     }
 
     function sellersLength() external view returns (uint256) {
         return sellers.length;
     }
 
-    function sellerAt(uint256 i) external view returns (uint256) {
-        return sellers[i];
+    function sellerAt(uint256 index) external view returns (uint256) {
+        return sellers[index];
     }
 
-    function _docs() internal pure returns (BINV.DocBundle memory) {
-        return BINV.DocBundle(bytes32("i"), bytes32("a"), bytes32("p"), bytes32("s"), bytes32("d"));
+    function liveInvoicesLength() external view returns (uint256) {
+        return liveInvoices.length;
+    }
+
+    function liveInvoiceAt(uint256 index) external view returns (uint256) {
+        return liveInvoices[index];
+    }
+
+    function fundedAuthorityIdsLength() external view returns (uint256) {
+        return fundedAuthorityIds.length;
+    }
+
+    function fundedAuthorityIdAt(uint256 index) external view returns (bytes32) {
+        return fundedAuthorityIds[index];
+    }
+
+    function fundedInvoiceIdAt(uint256 index) external view returns (uint256) {
+        return fundedInvoiceIds[index];
+    }
+
+    function _recordSuccessfulLock(uint256 invoiceId, bytes32 authorityInvoiceId) internal {
+        ++successfulLocks;
+        liveInvoices.push(invoiceId);
+        fundedAuthorityIds.push(authorityInvoiceId);
+        fundedInvoiceIds.push(invoiceId);
+    }
+
+    function _nextAuthorityInvoiceId() internal returns (bytes32) {
+        return
+            keccak256(
+                abi.encode("BUFI_INVARIANT_OPAQUE_AUTHORITY_FIXTURE_V1", address(this), ++authorityFixtureCounter)
+            );
+    }
+
+    function _terms(bytes32 authorityInvoiceId) internal view returns (ReceivableCommitment.FundingTerms memory) {
+        uint64 issuedAt = uint64(block.timestamp);
+        if (issuedAt == 0) issuedAt = 1;
+        return ReceivableCommitment.FundingTerms({
+            authority: ReceivableCommitment.AuthorityRef({
+                schemaVersion: ReceivableCommitment.VERSION,
+                authorityInvoiceId: authorityInvoiceId,
+                authorityEvidenceCommitment: keccak256(
+                    abi.encode("BUFI_INVARIANT_AUTHORITY_EVIDENCE_V1", authorityInvoiceId)
+                ),
+                verifierConfigId: authorityVerifier.verifierConfigId(),
+                authorityVoucherType: 19,
+                issuedAt: issuedAt,
+                authorityPaymentDueAt: issuedAt + 90 days
+            }),
+            recourse: true
+        });
+    }
+
+    function _approve(
+        ReceivableCommitment.FundingTerms memory terms,
+        uint256 seller,
+        uint256 debtor,
+        uint128 face,
+        uint64 firstMaturity
+    ) internal {
+        authorityVerifier.setApproval(
+            terms.authority, seller, debtor, address(usdc), face, terms.recourse, 2, firstMaturity, 30 days, true
+        );
+    }
+
+    function _docs(bytes32 namespace) internal pure returns (BINV.DocBundle memory) {
+        return BINV.DocBundle({
+            invoiceDocHash: keccak256(abi.encode(namespace, "invoice")),
+            assignmentHash: keccak256(abi.encode(namespace, "assignment")),
+            paymentInstructionHash: keccak256(abi.encode(namespace, "payment")),
+            servicingPolicyHash: keccak256(abi.encode(namespace, "servicing")),
+            disputePolicyHash: keccak256(abi.encode(namespace, "dispute"))
+        });
     }
 }
 
-contract ShelfInvariantsTest is Test {
+contract ShelfInvariantsTest is StrictAuthorityFixture {
     InvUSDC internal usdc;
     BUFIIdentityRegistry internal identity;
     BUFIReputationRegistry internal reputation;
     WorkspaceTierRegistry internal tiers;
     InvoiceShelf internal shelf;
+    StrictAuthorityInvoiceVerifier internal authorityVerifier;
     ShelfHandler internal handler;
 
     address internal admin = makeAddr("admin");
@@ -121,7 +251,7 @@ contract ShelfInvariantsTest is Test {
         identity = new BUFIIdentityRegistry(admin);
         reputation = new BUFIReputationRegistry(admin, identity);
         tiers = new WorkspaceTierRegistry(identity, reputation);
-        shelf = new InvoiceShelf(usdc, identity, reputation, tiers, admin);
+        (shelf, authorityVerifier) = _deployStrictShelf(usdc, identity, reputation, tiers, admin);
 
         address issuer = makeAddr("issuer");
         address attestor = makeAddr("attestor");
@@ -137,8 +267,10 @@ contract ShelfInvariantsTest is Test {
         uint256[] memory debtors = new uint256[](3);
         for (uint256 i = 0; i < 3; ++i) {
             vm.startPrank(issuer);
-            sellers[i] = identity.registerWorkspace(keccak256(abi.encode("seller", i)), makeAddr(string(abi.encode("s", i))));
-            debtors[i] = identity.registerWorkspace(keccak256(abi.encode("debtor", i)), makeAddr(string(abi.encode("d", i))));
+            sellers[i] =
+                identity.registerWorkspace(keccak256(abi.encode("seller", i)), makeAddr(string(abi.encode("s", i))));
+            debtors[i] =
+                identity.registerWorkspace(keccak256(abi.encode("debtor", i)), makeAddr(string(abi.encode("d", i))));
             identity.setKybStatus(sellers[i], true);
             identity.setKybStatus(debtors[i], true);
             vm.stopPrank();
@@ -161,25 +293,42 @@ contract ShelfInvariantsTest is Test {
         vm.prank(servicer);
         usdc.approve(address(shelf), type(uint256).max);
 
-        handler = new ShelfHandler(shelf, identity, reputation, tiers, usdc, sellers, debtors, servicer);
-        // re-grant servicer role to the handler (it pranks servicer, so role is on servicer;
-        // the handler calls via vm.prank(servicer) so no extra grant needed)
+        handler =
+            new ShelfHandler(shelf, identity, reputation, tiers, authorityVerifier, usdc, sellers, debtors, servicer);
+        handler.seedAuthorityCoverage(sellers[0], debtors[0], 20e6);
         targetContract(address(handler));
     }
 
-    /// @notice I1 — no seller's aggregate at-risk exposure ever exceeds its earned L(w).
-    function invariant_atRiskExposureNeverExceedsLimit() public view {
-        for (uint256 i = 0; i < handler.sellersLength(); ++i) {
-            uint256 s = handler.sellerAt(i);
-            assertLe(shelf.outstandingOf(s), tiers.limitOf(s), "I1: exposure > L(w)");
+    function invariant_authorityCoverageIsNonVacuous() public view {
+        assertGt(handler.successfulLocks(), 0, "authority success coverage is empty");
+        assertGt(handler.duplicateAttempts(), 0, "duplicate coverage is empty");
+        assertEq(handler.duplicateSuccesses(), 0, "a duplicate authority funded");
+        assertEq(handler.duplicateGuardReverts(), handler.duplicateAttempts());
+        assertEq(handler.fundedAuthorityIdsLength(), handler.successfulLocks(), "successful lock index mismatch");
+    }
+
+    function invariant_authorityIdentityIsInjectiveAndPermanent() public view {
+        uint256 length = handler.fundedAuthorityIdsLength();
+        for (uint256 i = 0; i < length; ++i) {
+            bytes32 authorityInvoiceId = handler.fundedAuthorityIdAt(i);
+            uint256 invoiceId = handler.fundedInvoiceIdAt(i);
+            assertEq(shelf.invoiceIdOfAuthorityInvoiceId(authorityInvoiceId), invoiceId);
+            assertEq(shelf.authorityInvoiceIdOf(invoiceId), authorityInvoiceId);
+            for (uint256 j = i + 1; j < length; ++j) {
+                assertNotEq(authorityInvoiceId, handler.fundedAuthorityIdAt(j), "authority identity reused");
+            }
         }
     }
 
-    /// @notice I2 — senior (A) and mezz (B) NAV stay at par until the junior buffer is wiped;
-    ///         senior only takes loss after both junior and mezz capacity are exhausted.
+    function invariant_atRiskExposureNeverExceedsLimit() public view {
+        for (uint256 i = 0; i < handler.sellersLength(); ++i) {
+            uint256 seller = handler.sellerAt(i);
+            assertLe(shelf.outstandingOf(seller), tiers.limitOf(seller), "I1: exposure > L(w)");
+        }
+    }
+
     function invariant_seniorParUnlessJuniorExhausted() public view {
         if (shelf.trancheLoss(0) > 0) {
-            // senior touched → junior AND mezz must be fully wiped
             assertEq(shelf.trancheAssets(2), 0, "I2: senior loss while junior solvent");
             assertEq(shelf.trancheAssets(1), 0, "I2: senior loss while mezz solvent");
         }
@@ -188,19 +337,46 @@ contract ShelfInvariantsTest is Test {
         }
     }
 
-    /// @notice I3 — the pool identity always holds: fundable cash + deployed principal
-    ///         == total LP deposits − realized losses. No phantom assets can be minted.
     function invariant_poolIdentity() public view {
         uint256 totalLoss = shelf.trancheLoss(0) + shelf.trancheLoss(1) + shelf.trancheLoss(2);
         assertEq(shelf.totalLiquid() + shelf.totalPrincipal(), TOTAL_DEPOSITS - totalLoss, "I3: pool identity broken");
     }
 
-    /// @notice I3b — real USDC held equals fundable cash plus the holdback owed to sellers.
     function invariant_cashBacked() public view {
         assertEq(
             usdc.balanceOf(address(shelf)),
             shelf.totalLiquid() + shelf.totalHoldbackHeld(),
             "I3b: USDC balance != liquid + held holdback"
         );
+    }
+
+    function invariant_currentInstallmentMatchesShelfLedger() public view {
+        for (uint256 i = 0; i < handler.liveInvoicesLength(); ++i) {
+            uint256 invoiceId = handler.liveInvoiceAt(i);
+            (,,,,,,,,, uint32 grace, uint8 nInstallments, uint8 paidInstallments,, InvoiceShelf.Status status) =
+                shelf.invoices(invoiceId);
+
+            assertLe(paidInstallments, nInstallments, "I4: completion cursor exceeds schedule");
+            if (status == InvoiceShelf.Status.Funded) {
+                assertLt(paidInstallments, nInstallments, "I4: funded invoice has no open slot");
+                (uint8 index, uint256 fullAmount, uint256 paidAmount, uint256 maturity, uint256 graceEndsAt) =
+                    shelf.currentInstallment(invoiceId);
+
+                assertEq(index, paidInstallments, "I4: projection diverges from completion cursor");
+                assertEq(paidAmount, shelf.installmentProgress(invoiceId), "I4: projection progress diverges");
+                assertEq(fullAmount, shelf.installmentAmount(invoiceId, index), "I4: projection amount diverges");
+                assertLt(paidAmount, fullAmount, "I4: completed slot left at current cursor");
+                assertEq(maturity, shelf.installmentDue(invoiceId, index), "I4: projection maturity diverges");
+                assertEq(graceEndsAt, maturity + grace, "I4: projection grace diverges");
+            } else {
+                (bool ok,) = address(shelf)
+                    .staticcall(abi.encodeWithSelector(InvoiceShelf.currentInstallment.selector, invoiceId));
+                assertFalse(ok, "I4: non-funded invoice exposes a current slot");
+                if (status == InvoiceShelf.Status.Settled) {
+                    assertEq(paidInstallments, nInstallments, "I4: settled schedule incomplete");
+                    assertEq(shelf.installmentProgress(invoiceId), 0, "I4: settled progress remains");
+                }
+            }
+        }
     }
 }

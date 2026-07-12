@@ -41,6 +41,11 @@ contract ReceivableEscrow is AccessControl, ReentrancyGuard {
 
     error ZeroAmount();
     error InsufficientEscrow(uint256 invoiceId, uint256 have, uint256 want);
+    error AtomicRefundLockRequired(uint256 invoiceId);
+    error RefundLockNotSet(uint256 invoiceId);
+    error RefundLockCannotDecrease(uint256 invoiceId, uint64 currentUnlockAt, uint64 proposedUnlockAt);
+    error RefundLockAlreadyCommitted(uint256 invoiceId, uint64 unlockAt);
+    error RefundWindowElapsed(uint256 invoiceId, uint64 unlockAt);
     error RefundLocked(uint256 invoiceId, uint64 unlockAt);
 
     constructor(IERC20 usdc, address admin) {
@@ -48,20 +53,39 @@ contract ReceivableEscrow is AccessControl, ReentrancyGuard {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
 
-    /// @notice bind a repayment to an invoice. Caller (router) has already collected/approved.
-    function deposit(uint256 invoiceId, uint256 amount, address from) external onlyRole(ROUTER_ROLE) nonReentrant {
+    /// @notice Retained ABI surface that fails closed; custody must include its lock atomically.
+    /// @dev Routers must migrate to `depositWithRefundLock`. A separate set-then-deposit sequence
+    ///      could reuse a stale lock after an earlier balance was drained.
+    function deposit(uint256 invoiceId, uint256, address) external onlyRole(ROUTER_ROLE) {
+        revert AtomicRefundLockRequired(invoiceId);
+    }
+
+    /// @notice Atomically bind a repayment and the shelf-authoritative refund boundary.
+    /// @dev `unlockAt` is supplied by a trusted router from the current installment recorded by
+    ///      InvoiceShelf. The first nonzero balance commits the window; partial deposits cannot
+    ///      extend it. Once custody is drained, a later installment may advance the lock.
+    function depositWithRefundLock(uint256 invoiceId, uint256 amount, address from, uint64 unlockAt)
+        external
+        onlyRole(ROUTER_ROLE)
+        nonReentrant
+    {
         if (amount == 0) revert ZeroAmount();
-        USDC.safeTransferFrom(from, address(this), amount);
-        escrowedOf[invoiceId] += amount;
-        totalEscrowed += amount;
-        emit Deposited(invoiceId, from, amount);
+        if (escrowedOf[invoiceId] == 0) {
+            _setRefundLock(invoiceId, unlockAt);
+        } else {
+            uint64 current = refundUnlockAt[invoiceId];
+            if (current == 0) revert RefundLockNotSet(invoiceId);
+            if (block.timestamp >= current) revert RefundWindowElapsed(invoiceId, current);
+        }
+        _deposit(invoiceId, amount, from);
     }
 
     /// @notice per-tier refund lockup (SPEC §5.3): set the earliest time a dispute refund
     ///         may fire for this invoice. Set by the router/settlement at deposit time.
     function setRefundLock(uint256 invoiceId, uint64 unlockAt) external onlyRole(ROUTER_ROLE) {
-        refundUnlockAt[invoiceId] = unlockAt;
-        emit RefundLockSet(invoiceId, unlockAt);
+        uint64 current = refundUnlockAt[invoiceId];
+        if (escrowedOf[invoiceId] != 0) revert RefundLockAlreadyCommitted(invoiceId, current);
+        _setRefundLock(invoiceId, unlockAt);
     }
 
     /// @notice settlement pulls escrowed funds for THIS invoice only, toward its outstanding.
@@ -75,10 +99,27 @@ contract ReceivableEscrow is AccessControl, ReentrancyGuard {
     ///         The arbiter can ONLY move funds already escrowed for this exact invoiceId.
     function refund(uint256 invoiceId, address to, uint256 amount) external onlyRole(ARBITER_ROLE) nonReentrant {
         uint64 unlock = refundUnlockAt[invoiceId];
+        if (unlock == 0) revert RefundLockNotSet(invoiceId);
         if (block.timestamp < unlock) revert RefundLocked(invoiceId, unlock);
         _debit(invoiceId, amount);
         USDC.safeTransfer(to, amount);
         emit Refunded(invoiceId, to, amount);
+    }
+
+    function _setRefundLock(uint256 invoiceId, uint64 unlockAt) internal {
+        if (unlockAt == 0) revert RefundLockNotSet(invoiceId);
+        uint64 current = refundUnlockAt[invoiceId];
+        if (unlockAt < current) revert RefundLockCannotDecrease(invoiceId, current, unlockAt);
+        refundUnlockAt[invoiceId] = unlockAt;
+        emit RefundLockSet(invoiceId, unlockAt);
+    }
+
+    function _deposit(uint256 invoiceId, uint256 amount, address from) internal {
+        if (amount == 0) revert ZeroAmount();
+        USDC.safeTransferFrom(from, address(this), amount);
+        escrowedOf[invoiceId] += amount;
+        totalEscrowed += amount;
+        emit Deposited(invoiceId, from, amount);
     }
 
     function _debit(uint256 invoiceId, uint256 amount) internal {

@@ -13,6 +13,9 @@ interface IBUFIReputationRegistry {
 
     event ScoreAttested(uint256 indexed agentId, uint8 sellerScore, uint8 debtorScore, uint32 modelVersion);
     event OnTimeInstallmentRecorded(uint256 indexed agentId, uint256 cumulative);
+    event OnTimeInstallmentObserved(
+        uint256 indexed agentId, uint256 realizedAmount, uint256 indexed epoch, bool credited
+    );
     event PermanentDefaultSet(uint256 indexed agentId);
     event RestructuredMarked(uint256 indexed agentId, uint256 count);
     event PairHistoryRecorded(uint256 indexed sellerAgentId, uint256 indexed debtorAgentId, uint256 settledCount);
@@ -25,7 +28,7 @@ interface IBUFIReputationRegistry {
         bytes32 featureRootHash
     ) external;
 
-    function recordOnTimeInstallment(uint256 agentId) external;
+    function recordOnTimeInstallment(uint256 agentId, uint256 realizedAmount) external returns (bool credited);
     function recordPairSettlement(uint256 sellerAgentId, uint256 debtorAgentId) external;
     function setPermanentDefault(uint256 agentId) external;
     function markRestructured(uint256 agentId) external;
