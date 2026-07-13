@@ -22,7 +22,7 @@ How the machine inverts the equilibrium — each mechanism maps to a Moloch fail
 |---|---|---|
 | Trust is unverifiable → nobody extends credit | The Credit Passport: verifiable transaction history + repayment behavior, attested on-chain | `SPEC_CREDIT_PASSPORT.md` |
 | Defection is cheap and repeatable | `PERMANENT_DEFAULT` is terminal on a KYB'd identity (Persona/Alfred UBO-linked — a new shell ≠ a new reputation); exposure `L(w)` is **earned only through realized repayment**, never bought, never attested into existence | §3.5, §4.9 |
-| Fraud's payoff exceeds its cost | Installment amortization bounds any theft to ~one installment window minus the workspace's own posted first-loss; building a fraudulent line costs more time than it yields | §3.6, §4.9 |
+| Fraud's payoff exceeds its cost | `L(w)`, concentration, velocity, tranche eligibility, and posted first-loss cap the fully funded advance; installments surface non-payment early and amortize that exposure only as real cash arrives | §3.5, §3.6, §4.9 |
 | Cooperation doesn't compound | Every on-time installment raises `L(w)`, improves terms, and is publicly provable — the honest path is the profitable path, visibly | §3.5, §P5 |
 | Value extraction masquerades as yield | Rebates and prizes are funded by real T-bill yield on real idle capital (the live, entitled USYC router), never emissions, never the next depositor | §5.3, B9 evidence |
 | Records serve the powerful | Regulator-grade, guaranteed-delivery audit trail (the UAFE queue+DLQ pattern already running in fx-pasillo) + public attestation proof pages | §8 preconditions |
@@ -136,7 +136,7 @@ Senior LPs are structurally shielded: thin-history and weak-score deals are abso
 `WorkspaceTierRegistry` maintains a per-workspace **aggregate outstanding cap** `L(w)`, independent of any single invoice's face value:
 
 - **Cold start:** a new/Developing workspace begins at `L0` (small, e.g. protocol-param `RECIBU_L0`, target ~$1–2k equivalent) *regardless of invoice size*. A $500k first invoice from an unknown workspace funds at most `L0`.
-- **Ramp:** `L(w)` increases only as `PAID_ON_TIME_CUMULATIVE(w)` rises, by a **bounded step per settled installment** and a **max slope** (`RECIBU_RAMP_STEP`, `RECIBU_RAMP_MAX_BPS_PER_EPOCH`). The line cannot jump; it must be *earned* through realized on-time repayments, not attested scores alone.
+- **Ramp:** `L(w)` increases only as `PAID_ON_TIME_CUMULATIVE(w)` rises, by a **bounded step per eligible settled installment** and a **max slope** (`RECIBU_RAMP_STEP`, `RECIBU_RAMP_MAX_BPS_PER_EPOCH`). An installment must realize at least $250 to earn the $250 step, and aggregate growth is capped at 20% of the epoch-start line per 30-day epoch. Ineligible/dust/cap-exceeding payments still settle cash but do not raise the line. The line cannot jump; it must be *earned* through realized on-time repayments, not attested scores alone.
 - **Debtor concentration:** no single debtor may back more than `RECIBU_MAX_DEBTOR_BPS` (e.g. 30%) of `L(w)`. Blocks the "spin up one fake debtor and scale" attack.
 - **Velocity:** max new advances per epoch (`RECIBU_MAX_VELOCITY`). Blocks burst-and-run.
 - **Design target:** parameters chosen so the *time-and-cost to build a fraudulent line exceeds its payoff*. Building trust is slow and honest; cashing it out is one-shot and reputation-terminal.
@@ -145,17 +145,17 @@ Senior LPs are structurally shielded: thin-history and weak-score deals are abso
 
 ### §3.6 Installment repayment — amortized recovery (AUTHORITATIVE, Exa Card / Exactly pattern)
 
-> Reference model: **Exactly Protocol** fixed-rate **fixed-maturity** pools and the **Exa Card** "pay in installments" flow. Adapting that here is the core *containment* mechanism.
+> Reference model: **Exactly Protocol** fixed-rate **fixed-maturity** pools and the **Exa Card** "pay in installments" flow. In v1 this is a repayment and early-detection mechanism, not staged drawdown.
 
 An advance is **not** a single bullet due at invoice maturity. It is split into `N` **installments**, each with its own **fixed maturity** (aligned to the debtor's payment schedule / net-terms milestones, or a synthetic BNPL-for-B2B schedule the ERP offers the debtor):
 
 - Each installment maps to a fixed-maturity slot (a Morpho market maturity or a scheduled `ReceivableEscrow` sweep). `InvoiceSettlement` applies each Recibo-memo inflow to the **earliest open installment** for that invoice.
-- **Reputation is incremental:** each on-time installment ticks `PAID_ON_TIME_CUMULATIVE`, which is what raises `L(w)` in §3.5. Trust compounds per-installment, not per-invoice.
-- **Blast-radius bound (the whole point):** at any instant a workspace's *at-risk* exposure ≈ `installmentSize × (open installments within grace)`, **not** full invoice face. A fraud or default is surfaced at the **first missed installment**, so realized loss on a fraudulent invoice ≈ one installment window, not 100% of face.
+- **Reputation is incremental but value- and slope-gated:** an on-time installment ticks `PAID_ON_TIME_CUMULATIVE` only when it meets the $250 minimum and the seller remains inside the epoch-start 20% ramp cap. `InstallmentPaid.creditedOnTime` reports that actual registry decision; `false` does not mean the cash failed to settle. Pair history is stricter still: it begins only after an economically meaningful invoice fully settles, never from a slot on a still-open invoice.
+- **No staged drawdown in v1:** `lockInvoice` disburses the entire advance immediately. Installments amortize exposure only when debtor cash is actually applied. The first uncured missed installment defaults the invoice and underwrites/writes off the **full then-outstanding advance**, which may be the entire advance—not one installment.
 - **Miss → escalate:** a missed installment past its grace window flips the invoice risk-state → triggers `CrossDefaultRegistry` (freeze all the workspace's residuals) → runs the §4.8 waterfall on the *outstanding* balance only.
 - **Recourse buyback** (recourse mode) is likewise amortized: the seller repays the outstanding advance in installments funded from `InflowDivertHook` diversions — matching the Exa Card "installments" UX for the seller side.
 
-`N`, installment cadence, and grace window are set at lock time from `tier(S_seller)`/`tier(S_debtor)` (weaker → more, smaller installments → tighter blast radius).
+`N`, installment cadence, and grace window are set at lock time from `tier(S_seller)`/`tier(S_debtor)` (weaker → more frequent checkpoints and earlier detection; v1 does not reduce funded exposure until payment arrives).
 
 ### §3.7 Multi-stablecoin denomination — StableFX invoices (AUTHORITATIVE, corrected per GATEMAN_AUDIT F4/F5)
 
@@ -207,7 +207,7 @@ default / missed installment (outstanding balance O)
 Three lines of defense; assume the first is sometimes beaten:
 
 1. **Prevention** — ERC-8004 identity; debtor-acceptance attestation; invoice + assignment document hashes; HSM-signed score attestations; `InvoiceMemoRouter` structured-memo binding (invoiceId/workspaceId/debtorId on every deposit); refund-path hardening on `ReceivableEscrow` (invoiceId/paymentId binding on every deposit/refund/withdrawal/settlement; arbiter perms separated from custody).
-2. **Containment** — graduated exposure cap `L(w)` (§3.5); installment amortization (§3.6); debtor-concentration + velocity limits; junior-tranche placement for thin history (§3.4); per-workspace operating reserve (§3.2). **Net effect: max loss per fraudulent workspace ≈ `min(L(w), installmentSize × openInstallments)`, minus its posted bond + reserve.**
+2. **Containment** — graduated exposure cap `L(w)` (§3.5); early installment checkpoints (§3.6); debtor-concentration + velocity limits; junior-tranche placement for thin history (§3.4); per-workspace operating reserve (§3.2). **Net effect in v1: gross loss per fraudulent workspace is bounded by its full then-outstanding advances (at most `L(w)`), less collected holdback, posted bond/reserve, and other waterfall recoveries. Installment size is not a loss cap.**
 3. **Recovery** — the §4.8 waterfall; `CrossDefaultRegistry`; recourse clawback; `PERMANENT_DEFAULT` reputation burn (terminal — the workspace's line goes to zero and cannot be rebuilt on the same identity).
 4. **Insurance buffer** — a protocol insurance fund (junior bIF-C + a settlement/insurance fee skimmed in `InvoiceSettlement` / the `RecibuSettlementGuardHook` `afterSwap`) sized to cover *expected* fraud loss at target volume, so realized fraud within the modeled bound never reaches senior LPs.
 
@@ -334,11 +334,11 @@ Seller *Strong* (S_seller 74), debtor *Strong* (S_debtor 76), `S_pair > 0`. Invo
 - Advance rate 85% → **$8,500** advanced now; **$1,500** holdback retained.
 - Seller reserve 15%, accrued (no bond). Tranche: bIF-A eligible. Non-recourse eligible (both Strong + history) but priced with insurance fee; assume seller picks recourse for a lower discount.
 - Exposure check: `$8,500 ≤ L(w)` and `≤ 30%` debtor concentration — passes.
-- Installments: 3 × ~$2,833 outstanding-amortizing, each a fixed maturity. **At-risk exposure is ever only ~one installment (~$2.8k), not $10k.**
+- Installments: 3 × ~$2,833 outstanding-amortizing, each a fixed maturity. **The full $8,500 advance is at risk immediately; each received installment reduces that outstanding exposure. There is no staged drawdown in v1.**
 - Debtor pays installments 1 & 2 on time → `PAID_ON_TIME_CUMULATIVE += 2`, `L(w)` steps up. Debtor misses installment 3.
 - Recovery on the **outstanding ~$2,833**: holdback ($1,500) → operating reserve → recourse inflow-diversion → (only if still short) junior tranche. Senior bIF-A principal is untouched. Seller's score takes the default hit; if the invoice/debtor is proven fake, `PERMANENT_DEFAULT` zeroes the line.
 
-Loss to LPs from a fully fraudulent version of this invoice ≈ **one installment window minus posted first-loss**, surfaced within ~30 days — not $10k at net-60.
+If the invoice is fully fraudulent and no payment arrives, the first uncured miss can expose the **full $8,500 outstanding advance**, less posted/collected first-loss and subsequent recovery. The installment schedule surfaces that loss around the first checkpoint rather than waiting until net-60; it does not shrink the initially funded amount.
 
 ---
 
@@ -349,7 +349,7 @@ Our own tokenized-invoice standard, so accepted receivables become a **DeFi-legi
 - **Form:** ERC-721, one token per **accepted** invoice, minted by `InvoiceShelf` at lock, burnt at final settlement or write-off. Soulbound-by-default in v1 (transfer restricted to the shelf) — the *tranches* (bIF-A/B/C) are the fungible DeFi surface, not the invoice itself.
 - **On-chain fields:** `invoiceId`, seller/debtor `agentId`s, face value + currency, issue/due dates, installment schedule (N, maturities, grace), status enum (`Accepted → Funded → PartiallyPaid → Settled | Defaulted | Restructured`), advance terms (rate, discount, recourse flag, tranche), and the **document-hash bundle** required by the legal boundary (§7 of the build prompt): invoice doc hash, receivables-assignment hash, payment-instruction hash, servicing + dispute policy hashes.
 - **Off-chain payload:** the full invoice document (desk-v1 `packages/invoice` format) + assignment agreement, content-addressed; on-chain holds hashes only.
-- **Event surface (indexer-first):** `InvoiceMinted/Funded/InstallmentPaid/InstallmentMissed/Settled/Defaulted/Restructured`, each carrying `invoiceId` + `memoId` linkage so the Arc Memo stream (§5.1), the passport (§P1 source 5), and the bINV lifecycle reconcile 1:1.
+- **Event surface (indexer-first):** `InvoiceMinted/Funded/InstallmentPaid/InstallmentMissed/Settled/Defaulted/Restructured`, each carrying `invoiceId` + `memoId` linkage so the Arc Memo stream (§5.1), the passport (§P1 source 5), and the bINV lifecycle reconcile 1:1. `InstallmentPaid.creditedOnTime` is the authoritative line-credit result (including minimum-value and epoch-cap policy), not a generic “cash arrived” label.
 - **Why a standard and not just internal state:** (a) auditability — one schema for auditors/LPs to price; (b) the credit passport's `featureRootHash` can prove invoice-level history; (c) future venues (other lenders, secondary markets) can consume bINV without BUFI's stack.
 - **Ancestor absorption (do not parallel-build):** desk-v1 already ships `contracts/recibo/src/BuInvoiceRecibo.sol` — a struct-mapping invoice ledger (status `None/Open/Settled/Attested/Void`, USDC memo-settled, `receiptHash` = hash of the canonical invoice PDF) with `ReciboInvoiceExtractor.sol` and CRE attestation companions. bINV **supersedes** it on Arc: adopt its status semantics and `receiptHash` document-binding convention, add the ERC-721 form + installments + the legal-assignment hash bundle it lacks, and provide a migration note so the dormant Sepolia deployment is retired, not duplicated. The desk-v1 acceptance chain (`team_invites → bills → invoices.accepted_at`) is the off-chain event that authorizes minting — there is **no `accepted` value in the `invoice_status` enum** (it's `draft/overdue/paid/unpaid/canceled/rejected/active`); bind to the real event, and fix the known drift (`'partial'` written by the bridge webhook but absent from the enum) upstream.
 

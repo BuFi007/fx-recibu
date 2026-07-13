@@ -56,7 +56,9 @@ contract WorkspaceTierRegistry {
         Tier t = tierOf(debtorScore);
         uint16 base = t == Tier.Excellent
             ? Params.ADVANCE_EXCELLENT_BPS
-            : t == Tier.Strong ? Params.ADVANCE_STRONG_BPS : t == Tier.Moderate ? Params.ADVANCE_MODERATE_BPS : Params.ADVANCE_DEVELOPING_BPS;
+            : t == Tier.Strong
+                ? Params.ADVANCE_STRONG_BPS
+                : t == Tier.Moderate ? Params.ADVANCE_MODERATE_BPS : Params.ADVANCE_DEVELOPING_BPS;
         if (!pairHistory) base -= Params.PAIR_PENALTY_BPS; // bases ≥ 6000 > penalty; cannot underflow
         return base;
     }
@@ -66,7 +68,9 @@ contract WorkspaceTierRegistry {
         Tier t = tierOf(sellerScore);
         return t == Tier.Excellent
             ? Params.RESERVE_EXCELLENT_BPS
-            : t == Tier.Strong ? Params.RESERVE_STRONG_BPS : t == Tier.Moderate ? Params.RESERVE_MODERATE_BPS : Params.RESERVE_DEVELOPING_BPS;
+            : t == Tier.Strong
+                ? Params.RESERVE_STRONG_BPS
+                : t == Tier.Moderate ? Params.RESERVE_MODERATE_BPS : Params.RESERVE_DEVELOPING_BPS;
     }
 
     /// @notice share of the reserve that must be POSTED as a USDC bond before lockInvoice
@@ -80,11 +84,7 @@ contract WorkspaceTierRegistry {
     }
 
     /// @notice non-recourse offered only when both sides ≥ Strong AND pair history exists (SPEC §3.3)
-    function nonRecourseEligible(uint8 sellerScore, uint8 debtorScore, bool pairHistory)
-        public
-        pure
-        returns (bool)
-    {
+    function nonRecourseEligible(uint8 sellerScore, uint8 debtorScore, bool pairHistory) public pure returns (bool) {
         return pairHistory && tierOf(sellerScore) >= Tier.Strong && tierOf(debtorScore) >= Tier.Strong;
     }
 

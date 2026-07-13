@@ -6,7 +6,7 @@
 
 A contract MUST NOT mark an invoice as legally assigned unless the authorized issuer/servicer has attested the required document hashes (enforced in `InvoiceShelf.lockInvoice` via the bINV doc-hash bundle).
 
-## Required off-chain document hashes per funded invoice
+## Required off-chain evidence per funded invoice
 
 | Field | Content addressed |
 |---|---|
@@ -15,12 +15,21 @@ A contract MUST NOT mark an invoice as legally assigned unless the authorized is
 | `paymentInstructionHash` | lockbox/payment redirection instruction to the debtor |
 | `servicingPolicyHash` | servicing policy version in force |
 | `disputePolicyHash` | dispute/default policy version in force |
-| `recourse` flag | recourse vs non-recourse election (see below) |
+
+These are the five content hashes in `BINV.DocBundle`. The separately stored
+`recourse` boolean is an explicit legal/product election, not a document hash.
+The receivable commitment binds that election together with the computed
+advance rate, advance amount, holdback amount, schedule, canonical grace, and
+tranche. Its separate document commitment binds the election to all five
+content hashes.
 
 ## Recourse vs non-recourse
 
 - **Recourse** (default; required when either party < Strong tier or no pair history — SPEC §3.3): on default the seller owes the outstanding advance back; enforced economically by inflow diversion + cross-default freeze + reputation.
-- **Non-recourse**: LP absorbs *credit* default per the §4.8 waterfall; offered only when both tiers ≥ Strong with pair history; priced with insurance contribution.
+- **Non-recourse**: designed for a future differentiated credit-default branch,
+  but production-disabled in v1. It cannot be offered until differentiated
+  pricing, insurance, recovery, and loss allocation are implemented and
+  approved.
 - **Fraud is always recourse** regardless of flag: a `PERMANENT_DEFAULT` attributable to fabricated invoices/acceptance voids non-recourse protection. `RestructureRouter` refuses to reclassify fraud.
 
 ## Servicer authority

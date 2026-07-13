@@ -88,7 +88,7 @@ Surfaced as a card in the desk-v1 **private-multisig approval inbox** (`componen
 |---|---|
 | Self-dealing ring (A invoices B, B invoices A, wash repayments) | counterparty-graph analysis (cycle detection, shared beneficial owners from KYB); pair-level caps; ring-flagged pairs excluded from `S_pair` and from `PAID_ON_TIME_CUMULATIVE` credit |
 | Fabricated revenue | source-diversity requirement (§P2): invoices uncorroborated by motora inflows or inbox documents carry near-zero weight |
-| Score farming with micro-invoices | volume features are value-weighted with diminishing returns; velocity caps (SPEC §3.5); ramp step is bounded regardless of count |
+| Score farming with micro-invoices | on-chain line credit requires a realized installment ≥$250, is capped to 20% of the epoch-start line per 30-day epoch, and pair history requires a fully settled ≥$250 invoice; velocity caps still apply (SPEC §3.5) |
 | Data poisoning of the inbox (fake emails/PDFs) | document-intelligence cross-checks (issuer domain age, statement reconciliation against motora); inbox-only signals never move `L(w)` |
 | Compromised scoring service | HSM signing + attestation nonces; on-chain ramp invariant bounds the blast radius of any fake score to pricing (not exposure); `OraclePauser`-style anomaly alerts on attestation patterns |
 | Stolen session / account takeover at the offer moment | **Verified gap: no device fingerprinting or actor binding exists anywhere in the ecosystem today.** Launch precondition (SPEC §8.3.4): device/session binding on offer acceptance + payout-address changes; dual-control multisig acceptance (§8.3.5) as the compensating control until then |

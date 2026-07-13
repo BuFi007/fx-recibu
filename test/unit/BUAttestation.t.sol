@@ -147,4 +147,188 @@ contract BUAttestationTest is Test {
         attestation.attestScore(agentId, 50, 50, 2, bytes32(0), 0, deadline, _sign(digest, newKey));
         assertEq(reputation.scoreOf(agentId).modelVersion, 2);
     }
+
+    function test_donTeamKybCredential_happyPathAndExpiry() public {
+        address forwarder = makeAddr("don-forwarder");
+        bytes32 workflowId = keccak256("workflow-kyb-credential");
+        uint64 chainSelector = 3_034_092_155_422_581_607;
+        vm.prank(admin);
+        attestation.setDonConfig(forwarder, workflowId, chainSelector);
+
+        bytes32 teamKey = keccak256("team-kyb");
+        uint64 validUntil = uint64(block.timestamp + 1 days);
+        bytes32 operationId = keccak256("operation-1");
+        bytes memory report = abi.encode(
+            attestation.TEAM_KYB_KIND(),
+            uint256(teamKey),
+            true,
+            validUntil,
+            uint64(1),
+            operationId,
+            workflowId,
+            chainSelector,
+            uint64(block.timestamp + 1 hours)
+        );
+
+        vm.prank(forwarder);
+        attestation.onReport(bytes(""), report);
+        assertTrue(attestation.teamKybApproved(teamKey));
+        (bool approved,, uint64 storedValidUntil, uint64 version, bytes32 storedOp) = attestation.teamKybState(teamKey);
+        assertTrue(approved);
+        assertEq(storedValidUntil, validUntil);
+        assertEq(version, 1);
+        assertEq(storedOp, operationId);
+
+        vm.warp(validUntil + 1);
+        assertFalse(attestation.teamKybApproved(teamKey));
+    }
+
+    function test_donTeamKybRevocationAndReplayProtection() public {
+        address forwarder = makeAddr("don-forwarder");
+        bytes32 workflowId = keccak256("workflow-kyb-credential");
+        uint64 chainSelector = 3_034_092_155_422_581_607;
+        vm.prank(admin);
+        attestation.setDonConfig(forwarder, workflowId, chainSelector);
+
+        bytes32 teamKey = keccak256("team-kyb");
+        bytes32 operationId = keccak256("operation-revoke");
+        bytes memory report = abi.encode(
+            attestation.TEAM_KYB_KIND(),
+            uint256(teamKey),
+            false,
+            uint64(0),
+            uint64(1),
+            operationId,
+            workflowId,
+            chainSelector,
+            uint64(block.timestamp + 1 hours)
+        );
+
+        vm.prank(forwarder);
+        attestation.onReport(bytes(""), report);
+        assertFalse(attestation.teamKybApproved(teamKey));
+
+        vm.expectRevert(abi.encodeWithSelector(BUAttestation.DonReplay.selector, operationId));
+        vm.prank(forwarder);
+        attestation.onReport(bytes(""), report);
+
+        bytes memory stale = abi.encode(
+            attestation.TEAM_KYB_KIND(),
+            uint256(teamKey),
+            true,
+            uint64(block.timestamp + 1 days),
+            uint64(1),
+            keccak256("operation-stale"),
+            workflowId,
+            chainSelector,
+            uint64(block.timestamp + 1 hours)
+        );
+        vm.expectRevert(abi.encodeWithSelector(BUAttestation.StaleTeamKybVersion.selector, uint64(1), uint64(1)));
+        vm.prank(forwarder);
+        attestation.onReport(bytes(""), stale);
+    }
+
+    function test_donTeamKybRejectsWrongForwarderKindAndExpiry() public {
+        address forwarder = makeAddr("don-forwarder");
+        bytes32 workflowId = keccak256("workflow-kyb-credential");
+        uint64 chainSelector = 3_034_092_155_422_581_607;
+        vm.prank(admin);
+        attestation.setDonConfig(forwarder, workflowId, chainSelector);
+
+        bytes32 teamKey = keccak256("team-kyb");
+        bytes memory report = abi.encode(
+            uint8(2),
+            uint256(teamKey),
+            true,
+            uint64(block.timestamp + 1 days),
+            uint64(1),
+            keccak256("operation-kind"),
+            workflowId,
+            chainSelector,
+            uint64(block.timestamp + 1 hours)
+        );
+
+        vm.expectRevert(BUAttestation.NotDonForwarder.selector);
+        attestation.onReport(bytes(""), report);
+
+        vm.expectRevert(BUAttestation.DonMalformedReport.selector);
+        vm.prank(forwarder);
+        attestation.onReport(bytes(""), report);
+
+        report = abi.encode(
+            attestation.TEAM_KYB_KIND(),
+            uint256(teamKey),
+            true,
+            uint64(block.timestamp),
+            uint64(1),
+            keccak256("operation-expired"),
+            workflowId,
+            chainSelector,
+            uint64(block.timestamp + 1 hours)
+        );
+        vm.expectRevert(BUAttestation.DonInvalidExpiry.selector);
+        vm.prank(forwarder);
+        attestation.onReport(bytes(""), report);
+    }
+
+    function test_donAgentKybApprovalRequiresFiniteFutureExpiry() public {
+        address forwarder = makeAddr("don-forwarder");
+        bytes32 workflowId = keccak256("workflow-agent-kyb");
+        uint64 chainSelector = 3_034_092_155_422_581_607;
+        vm.prank(admin);
+        attestation.setDonConfig(forwarder, workflowId, chainSelector);
+
+        bytes32 operationId = keccak256("operation-agent-no-expiry");
+        bytes memory report = abi.encode(
+            attestation.AGENT_KYB_KIND(),
+            agentId,
+            true,
+            uint64(0),
+            uint64(1),
+            operationId,
+            workflowId,
+            chainSelector,
+            uint64(block.timestamp + 1 hours)
+        );
+
+        vm.expectRevert(BUAttestation.DonInvalidExpiry.selector);
+        vm.prank(forwarder);
+        attestation.onReport(bytes(""), report);
+        assertFalse(identity.kybApproved(agentId));
+        assertFalse(attestation.processedDonOperations(operationId));
+    }
+
+    function test_donScoreReportWritesReputationWithoutHsm() public {
+        address forwarder = makeAddr("don-forwarder");
+        bytes32 workflowId = keccak256("workflow-score-attest");
+        uint64 chainSelector = 3_034_092_155_422_581_607;
+        vm.startPrank(admin);
+        attestation.setDonConfig(forwarder, workflowId, chainSelector);
+        vm.stopPrank();
+
+        bytes32 operationId = keccak256("score-operation");
+        bytes memory inner = abi.encode(
+            agentId,
+            uint8(74),
+            uint8(87),
+            uint32(2),
+            bytes32("feature-root"),
+            operationId,
+            workflowId,
+            chainSelector,
+            uint64(block.timestamp + 1 hours)
+        );
+        bytes memory report = abi.encode(attestation.DON_SCORE_KIND(), inner);
+
+        vm.prank(forwarder);
+        attestation.onReport(bytes(""), report);
+
+        IBUFIReputationRegistry.ScoreSnapshot memory snapshot = reputation.scoreOf(agentId);
+        assertEq(snapshot.sellerScore, 74);
+        assertEq(snapshot.debtorScore, 87);
+        assertEq(snapshot.modelVersion, 2);
+        vm.expectRevert(abi.encodeWithSelector(BUAttestation.DonReplay.selector, operationId));
+        vm.prank(forwarder);
+        attestation.onReport(bytes(""), report);
+    }
 }

@@ -2,17 +2,51 @@
 
 On-chain **invoice factoring + SME credit passport** for KYB'd BUFI workspaces, on Arc.
 A workspace with a strong payment score sells an **accepted** invoice for instant USDC;
-the advance is priced by the **dual payment score** of both seller and debtor, amortized
-over installments, and funded from tranched LP capital — with a fraud blast-radius bounded
-by design.
+the advance is priced by the **dual payment score** of both seller and debtor, repaid
+over installments, and funded from tranched LP capital — with exposure bounded by `L(w)`,
+concentration, velocity, seller first-loss, and the tranche waterfall.
 
 > **Authoritative specs:** `SPEC.md`, `SPEC_CREDIT_PASSPORT.md`, `ROADMAP.md`.
 > **Audits/analysis:** `docs/GATEMAN_AUDIT.md`, `docs/BUCKET_ANALYSIS.md`, `docs/THREAT_MODEL.md`, `docs/LEGAL_BOUNDARIES.md`, `docs/LICENSE_BOUNDARIES.md`.
 
+## Private AML architecture (production target)
+
+Private settlement and ACE shielding are **future production gates**, not capabilities of the current local
+conformance implementation. The repository contains an ACE-compatible KYB policy surface, but it does not yet
+provide an end-to-end privacy pool, shielded payout, Confidential HTTP flow, or live ACE deployment. The current
+settlement contracts and events must be treated as public-chain surfaces.
+
+The intended production architecture keeps privacy as the default and enforces compliance at the **shield
+boundary** (an AML check before funds enter the privacy pool):
+
+```
+  DEPOSIT            SHIELD                          WITHDRAW         RAMPS (KYC/KYB)
+ Factor/LP ──▶ Fresh/Stealth ─▶ AML Check ─▶ Privacy Pool ─▶ Fresh Addr    Fiat ⇄ Crypto via
+ capital      Address                                       (seller)      ID Verification +
+                                                                          Licensed Provider + Bank
+```
+
+- **Deposit target** — factor / tranche capital funds the shelf; the seller payout uses a fresh address per
+  settlement.
+- **Shield target** — an ACE PolicyEngine screens seller + debtor before `lockInvoice` / settlement; a failed
+  screen reverts instead of leaking settlement details.
+- **Withdraw target** — the seller receives `face − holdback` through a shielded payout path.
+- **Ramp target** — seller off-ramp uses Persona KYC plus a licensed provider; the KYB-approved workspace
+  credential becomes a reusable ACE attestation.
+
+The proposed shield uses ACE, hide-sender/privacy-pool primitives, and Confidential HTTP. The
+`RecibuMemoRouter` + `RecibuPayment` event is the proposed reconciliation entrypoint, not proof that shielding
+has occurred. Full design + the now-vs-ACE-Early-Access build split:
+**desk-v1 `docs/superpowers/specs/2026-07-09-private-aml-architecture-ace.md`**.
+Production activation remains blocked until the private-by-default path and its compliance controls are live
+and independently verified.
+
 ## Build status
 
-`forge test` → **67 passing** (unit + integration + 4 fuzzed fraud-containment invariants
-at 128k calls each; deep profile = 10k runs). Solidity 0.8.26, `via_ir`, optimizer 200.
+Keyless local conformance tests are available with Foundry. There is no live Arc deployment from this
+repository: the production entrypoint `Deploy.run()` intentionally reverts with
+`ProductionActivationDisabled` until the authority, verifier, privacy, and deployment-manifest gates are met.
+Solidity 0.8.26, `via_ir`, optimizer 200.
 
 ## Contract map (milestones)
 
@@ -25,7 +59,7 @@ at 128k calls each; deep profile = 10k runs). Solidity 0.8.26, `via_ir`, optimiz
 | Defaults | `WorkspaceOperatingReserve`, bond gate, `resolveDefault` | M4 |
 | Settlement rails | `InvoiceMemoRouter` (Arc Memo), `ReceivableEscrow` (hardened), `InvoiceSettlement` | M5 |
 | Uniswap v4 | `RecibuSettlementGuardHook` (beforeSwap guard) | M7 |
-| Deploy | `script/Deploy.s.sol` (full wiring + admin handoff) | M8 |
+| Deploy | `script/Deploy.s.sol` (local wiring helpers; production entrypoint disabled) | M8 gate |
 
 M6 (BUFICreditVault over the deployed Morpho **Vault V2** factory `0x6b7F638B…`) is a
 deploy-time instantiation of an external factory — scripted in `Deploy` notes, allocated
@@ -40,22 +74,29 @@ across the canonical fx-Telaraña + fx-Recibú markets; no new protocol contract
 3. **No phantom assets** — pool identity `liquid + principal == Σ deposits − Σ loss`, and
    USDC held == liquid + custodied holdback. (`invariant_poolIdentity`, `invariant_cashBacked`.)
 
-Plus: installment amortization bounds a fraud loss to ~one window; the escrow binds every
+Line growth is separately fail-closed against wash-volume: a credited installment must
+realize at least $250, aggregate credits cannot grow the line by more than 20% of its
+epoch-start value per 30 days, and pair history begins only after a ≥$250 invoice fully settles.
+Once canonical escrow is wired, the legacy direct-servicer payment harness is disabled;
+production repayment history can enter only through debtor-owner-bound memo routing and settlement.
+
+Installments provide earlier default detection and reduce outstanding principal as cash is
+received; they do **not** stage the v1 advance. The full advance is disbursed at lock and the
+first uncured miss underwrites/writes off all then-outstanding principal. The escrow binds every
 movement to an `invoiceId` so an arbiter can never touch unrelated funds (`ReceivableEscrow`,
 THREAT_MODEL T5).
 
-## Run
+## Keyless local verification
 
 ```bash
-forge test                     # full suite
-forge test --match-path "test/invariant/*"   # fraud-containment invariants
-FOUNDRY_PROFILE=deep forge test               # 10k-run fuzz gate
+forge fmt --check
+FOUNDRY_PROFILE=ci forge test
+forge test --match-path "test/invariant/*"
 ```
 
-Deploy (Arc): set `DEPLOYER_PRIVATE_KEY`, `USDC`, `ADMIN`, `HSM_SIGNER`, then
-`forge script script/Deploy.s.sol --rpc-url arc_testnet --broadcast`. Verified Arc
-constants (USDC, Arc Memo predeploy, Morpho, Vault V2 factory, USYC router) are listed in
-`docs/GATEMAN_AUDIT.md §6` and the `Deploy` header — use those, not memory.
+These commands do not need credentials and do not broadcast. Do not use `--broadcast`: live Arc deployment is
+a future, owner-reviewed production step. Candidate Arc constants and their evidence are tracked in
+`docs/GATEMAN_AUDIT.md`; they must be re-verified and pinned in an approved deployment manifest before use.
 
 ## License
 

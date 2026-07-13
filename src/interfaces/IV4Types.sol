@@ -49,6 +49,33 @@ library BeforeSwapDeltaLibrary {
     BeforeSwapDelta internal constant ZERO_DELTA = BeforeSwapDelta.wrap(0);
 }
 
+/// @dev Canonical Uniswap v4 low-address permission bits. A production hook must be
+///      mined/deployed so `(uint160(hook) & ALL_HOOK_MASK) == declared permissions`.
+///      RecibuSettlementGuardHook currently exposes these values for deployment tooling,
+///      but deliberately permits only local-simulation deployment until that CREATE2
+///      boundary and a live PoolManager integration have been reviewed.
+library HookAddressFlags {
+    uint160 internal constant ALL_HOOK_MASK = (1 << 14) - 1;
+    uint160 internal constant BEFORE_SWAP_FLAG = 1 << 7;
+    uint160 internal constant AFTER_SWAP_FLAG = 1 << 6;
+}
+
+/// @dev Canonical v4 BalanceDelta packing: currency0 in the high int128 and
+///      currency1 in the low int128. Positive deltas are owed to the caller.
+library BalanceDeltaLibrary {
+    function amount0(int256 delta) internal pure returns (int128 value) {
+        assembly ("memory-safe") {
+            value := sar(128, delta)
+        }
+    }
+
+    function amount1(int256 delta) internal pure returns (int128 value) {
+        assembly ("memory-safe") {
+            value := signextend(15, delta)
+        }
+    }
+}
+
 /// @title IRecibuPriceFeed — the FX-mark freshness surface the guard checks (SPEC §7).
 interface IRecibuPriceFeed {
     /// @return price 1e18-scaled mark, updatedAt unix seconds of last update

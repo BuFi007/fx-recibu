@@ -68,7 +68,7 @@ Off-chain + desk-v1 track (`SPEC_CREDIT_PASSPORT.md` §P1–§P4); on-chain surf
 
 **Exit gate — the fraud-containment invariants must pass here:**
 - `invariant_atRiskExposureNeverExceedsLimit`: for all `w`, `atRiskExposure(w) ≤ L(w)` (SPEC §4.9).
-- `invariant_installmentBlastRadius`: an invoice's at-risk balance never exceeds `installmentSize × openInstallmentsWithinGrace` (SPEC §3.6).
+- `invariant_outstandingAdvanceAccounting`: each lock books the full advance immediately; payments reduce it dollar-for-dollar; the first uncured miss writes off all then-outstanding principal (SPEC §3.6). v1 has no staged-drawdown or installment-size loss bound.
 - `invariant_seniorNavParUnlessJuniorExhausted`: bIF-A NAV stays at par until bIF-C then bIF-B assets hit zero (SPEC §6.2 subordination).
 - `lockInvoice` rejects: over-`L(w)`, over-concentration, over-velocity, missing bond for weak tier (SPEC §3.2/§3.5).
 
@@ -136,7 +136,7 @@ Scripts:
 
 ## Cross-cutting: audit readiness (continuous)
 
-- Every fraud-containment invariant (§3.5 cap, §3.6 blast radius, §4.8 waterfall, §4.9 exposure) has a named `invariant_*` test that runs in the deep (10000-run) profile in CI.
+- Every fraud-containment invariant (§3.5 cap, §3.6 outstanding-advance accounting, §4.8 waterfall, §4.9 exposure) has a named `invariant_*` test that runs in the deep (10000-run) profile in CI.
 - Coverage target ≥90% on `src/` before audit freeze.
 - Freeze date & scope tracked against the fx-Recibú audit application (mirrors the fx-Telaraña audit discipline).
 

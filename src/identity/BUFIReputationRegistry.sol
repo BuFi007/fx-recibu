@@ -4,6 +4,7 @@ pragma solidity 0.8.26;
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {IBUFIIdentityRegistry} from "../interfaces/IBUFIIdentityRegistry.sol";
 import {IBUFIReputationRegistry} from "../interfaces/IBUFIReputationRegistry.sol";
+import {Params} from "../libraries/Params.sol";
 
 /// @title BUFIReputationRegistry
 /// @notice The credit passport's on-chain state. WRITE-PATH LAW (SPEC §4.9):
@@ -25,6 +26,9 @@ contract BUFIReputationRegistry is AccessControl, IBUFIReputationRegistry {
 
     mapping(uint256 => ScoreSnapshot) internal _scores;
     mapping(uint256 => uint256) internal _paidOnTime;
+    mapping(uint256 agentId => uint256 epoch) public rampEpochOf;
+    mapping(uint256 agentId => uint256 line) public rampEpochBaseLimitOf;
+    mapping(uint256 agentId => uint256 credits) public rampCreditsInEpochOf;
     mapping(uint256 => mapping(uint256 => uint256)) internal _pairSettled;
     mapping(uint256 => bool) internal _permanentDefault;
     mapping(uint256 => uint256) internal _restructured;
@@ -63,10 +67,46 @@ contract BUFIReputationRegistry is AccessControl, IBUFIReputationRegistry {
 
     // ── SETTLEMENT: realized repayment only ────────────────────────────
 
-    function recordOnTimeInstallment(uint256 agentId) external onlyRole(SETTLEMENT_ROLE) {
+    /// @notice Observe a realized installment and credit L(w) only when it is economically
+    ///         meaningful and remains within the epoch-start slope cap.
+    /// @dev Returning false never blocks repayment. The registry, rather than a caller,
+    ///      owns both the minimum-value and per-epoch rules so no alternate settlement
+    ///      writer can turn dust into line capacity.
+    function recordOnTimeInstallment(uint256 agentId, uint256 realizedAmount)
+        external
+        onlyRole(SETTLEMENT_ROLE)
+        returns (bool credited)
+    {
         _requireLiveAgent(agentId);
+        uint256 epoch = block.timestamp / Params.EPOCH_LENGTH;
+        uint256 baseLimit = rampEpochBaseLimitOf[agentId];
+        if (baseLimit == 0 || rampEpochOf[agentId] != epoch) {
+            baseLimit = _lineForPaidCount(_paidOnTime[agentId]);
+            rampEpochOf[agentId] = epoch;
+            rampEpochBaseLimitOf[agentId] = baseLimit;
+            rampCreditsInEpochOf[agentId] = 0;
+        }
+
+        if (realizedAmount < Params.MIN_CREDITED_INSTALLMENT_USDC || baseLimit >= Params.L_MAX_USDC) {
+            emit OnTimeInstallmentObserved(agentId, realizedAmount, epoch, false);
+            return false;
+        }
+
+        uint256 epochIncreaseCap = (baseLimit * Params.RAMP_MAX_BPS_PER_EPOCH) / Params.BPS;
+        uint256 remainingToHardCap = Params.L_MAX_USDC - baseLimit;
+        if (epochIncreaseCap > remainingToHardCap) epochIncreaseCap = remainingToHardCap;
+        uint256 maxCredits = epochIncreaseCap / Params.RAMP_STEP_USDC;
+        uint256 credits = rampCreditsInEpochOf[agentId];
+        if (credits >= maxCredits) {
+            emit OnTimeInstallmentObserved(agentId, realizedAmount, epoch, false);
+            return false;
+        }
+
+        rampCreditsInEpochOf[agentId] = credits + 1;
         uint256 cumulative = ++_paidOnTime[agentId];
         emit OnTimeInstallmentRecorded(agentId, cumulative);
+        emit OnTimeInstallmentObserved(agentId, realizedAmount, epoch, true);
+        return true;
     }
 
     function recordPairSettlement(uint256 sellerAgentId, uint256 debtorAgentId) external onlyRole(SETTLEMENT_ROLE) {
@@ -124,5 +164,10 @@ contract BUFIReputationRegistry is AccessControl, IBUFIReputationRegistry {
     function _requireLiveAgent(uint256 agentId) internal view {
         _requireExists(agentId);
         if (_permanentDefault[agentId]) revert AgentPermanentlyDefaulted(agentId);
+    }
+
+    function _lineForPaidCount(uint256 paidCount) internal pure returns (uint256 line) {
+        line = Params.L0_USDC + paidCount * Params.RAMP_STEP_USDC;
+        if (line > Params.L_MAX_USDC) line = Params.L_MAX_USDC;
     }
 }

@@ -25,12 +25,21 @@ contract BUFIIdentityRegistry is AccessControl, IBUFIIdentityRegistry {
     mapping(bytes32 => uint256) internal _agentIdOf;
     mapping(uint256 => bytes32) internal _workspaceOf;
     mapping(uint256 => address) internal _ownerOf;
-    mapping(uint256 => bool) internal _kybApproved;
+
+    struct KybState {
+        bool approved;
+        uint64 observedAt;
+        uint64 validUntil;
+        uint64 version;
+        bytes32 operationId;
+    }
+    mapping(uint256 => KybState) internal _kyb;
 
     error AlreadyRegistered(bytes32 workspaceId);
     error UnknownAgent(uint256 agentId);
     error ZeroAddress();
     error ZeroWorkspaceId();
+    error StaleKybVersion(uint64 current, uint64 received);
 
     constructor(address admin) {
         if (admin == address(0)) revert ZeroAddress();
@@ -55,7 +64,29 @@ contract BUFIIdentityRegistry is AccessControl, IBUFIIdentityRegistry {
 
     function setKybStatus(uint256 agentId, bool approved) external onlyRole(ISSUER_ROLE) {
         _requireExists(agentId);
-        _kybApproved[agentId] = approved;
+        KybState storage s = _kyb[agentId];
+        s.approved = approved;
+        s.observedAt = uint64(block.timestamp);
+        s.validUntil = 0;
+        s.version += 1;
+        // This write is issuer/HSM-sourced, not a DON report. Never retain a
+        // DON operation identifier as provenance for newly written state.
+        s.operationId = bytes32(0);
+        emit KybStatusSet(agentId, approved);
+    }
+
+    function setKybStatus(uint256 agentId, bool approved, uint64 validUntil, uint64 version, bytes32 operationId)
+        external
+        onlyRole(ISSUER_ROLE)
+    {
+        _requireExists(agentId);
+        KybState storage s = _kyb[agentId];
+        if (version <= s.version) revert StaleKybVersion(s.version, version);
+        s.approved = approved;
+        s.observedAt = uint64(block.timestamp);
+        s.validUntil = validUntil;
+        s.version = version;
+        s.operationId = operationId;
         emit KybStatusSet(agentId, approved);
     }
 
@@ -79,7 +110,18 @@ contract BUFIIdentityRegistry is AccessControl, IBUFIIdentityRegistry {
     }
 
     function kybApproved(uint256 agentId) external view returns (bool) {
-        return _kybApproved[agentId];
+        KybState memory s = _kyb[agentId];
+        return s.approved && (s.validUntil == 0 || block.timestamp <= s.validUntil);
+    }
+
+    function kybState(uint256 agentId)
+        external
+        view
+        returns (bool approved, uint64 observedAt, uint64 validUntil, uint64 version, bytes32 operationId)
+    {
+        _requireExists(agentId);
+        KybState memory s = _kyb[agentId];
+        return (s.approved, s.observedAt, s.validUntil, s.version, s.operationId);
     }
 
     function exists(uint256 agentId) public view returns (bool) {

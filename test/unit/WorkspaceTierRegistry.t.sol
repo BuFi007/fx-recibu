@@ -97,17 +97,32 @@ contract WorkspaceTierRegistryTest is Test {
 
     function test_limit_coldStartAndRamp() public {
         assertEq(tiers.limitOf(agentId), Params.L0_USDC);
-        vm.startPrank(settlement);
-        reputation.recordOnTimeInstallment(agentId);
-        reputation.recordOnTimeInstallment(agentId);
-        reputation.recordOnTimeInstallment(agentId);
-        vm.stopPrank();
+        for (uint256 i; i < 3; ++i) {
+            vm.prank(settlement);
+            assertTrue(reputation.recordOnTimeInstallment(agentId, Params.RAMP_STEP_USDC));
+            vm.warp(block.timestamp + Params.EPOCH_LENGTH);
+        }
         assertEq(tiers.limitOf(agentId), Params.L0_USDC + 3 * Params.RAMP_STEP_USDC);
+    }
+
+    function test_rampRejectsDustAndCapsEpochSlopeWithoutBlockingSettlement() public {
+        vm.prank(settlement);
+        assertFalse(reputation.recordOnTimeInstallment(agentId, Params.MIN_CREDITED_INSTALLMENT_USDC - 1));
+        assertEq(tiers.limitOf(agentId), Params.L0_USDC);
+
+        vm.prank(settlement);
+        assertTrue(reputation.recordOnTimeInstallment(agentId, Params.MIN_CREDITED_INSTALLMENT_USDC));
+        vm.prank(settlement);
+        assertFalse(reputation.recordOnTimeInstallment(agentId, 10_000e6), "second credit exceeds epoch cap");
+
+        assertEq(reputation.rampEpochBaseLimitOf(agentId), Params.L0_USDC);
+        assertEq(reputation.rampCreditsInEpochOf(agentId), 1);
+        assertEq(tiers.limitOf(agentId), Params.L0_USDC + Params.RAMP_STEP_USDC);
     }
 
     function test_limit_zeroOnPermanentDefault() public {
         vm.prank(settlement);
-        reputation.recordOnTimeInstallment(agentId);
+        reputation.recordOnTimeInstallment(agentId, Params.RAMP_STEP_USDC);
         vm.prank(ops);
         reputation.setPermanentDefault(agentId);
         assertEq(tiers.limitOf(agentId), 0);
@@ -132,11 +147,12 @@ contract WorkspaceTierRegistryTest is Test {
         uint256 prev = tiers.limitOf(agentId);
         for (uint256 i = 0; i < installments; ++i) {
             vm.prank(settlement);
-            reputation.recordOnTimeInstallment(agentId);
+            reputation.recordOnTimeInstallment(agentId, Params.RAMP_STEP_USDC);
             uint256 cur = tiers.limitOf(agentId);
             assertGe(cur, prev, "L(w) decreased");
             assertLe(cur, Params.L_MAX_USDC, "L(w) exceeded cap");
             prev = cur;
+            vm.warp(block.timestamp + Params.EPOCH_LENGTH);
         }
     }
 

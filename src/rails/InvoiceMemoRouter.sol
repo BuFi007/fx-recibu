@@ -6,6 +6,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IInvoiceShelf} from "../interfaces/IInvoiceShelf.sol";
+import {InvoiceInstallmentKey} from "../libraries/InvoiceInstallmentKey.sol";
 import {ReceivableEscrow} from "./ReceivableEscrow.sol";
 
 /// @title InvoiceMemoRouter — the Arc-Memo-shaped repayment front door (M5, SPEC §5.1)
@@ -31,9 +32,23 @@ contract InvoiceMemoRouter is ReentrancyGuard {
     );
 
     error InvoiceNotFunded(uint256 invoiceId);
+    error InstallmentMismatch(uint256 invoiceId, uint8 supplied, uint8 expected);
+    error InvalidInstallmentAccounting(uint256 invoiceId, uint256 fullAmount, uint256 paidAmount);
+    error PaymentExceedsInstallmentRemaining(
+        uint256 invoiceId, uint256 attemptedAmount, uint256 shelfRemaining, uint256 pendingEscrow
+    );
+    error InvalidRefundWindow(uint256 invoiceId, uint256 maturity, uint256 graceEndsAt);
+    error RefundUnlockOverflow(uint256 invoiceId, uint256 depositTimestamp, uint256 lockDuration);
+    error SettlementTokenMismatch(address token, address expectedToken);
+    error CanonicalEscrowMismatch(address escrow, address expectedEscrow);
+    error UnauthorizedPayer(uint256 invoiceId, address payer, address expectedPayer);
     error ZeroAmount();
 
     constructor(IERC20 usdc, IInvoiceShelf shelf, ReceivableEscrow escrow) {
+        address shelfToken = shelf.USDC();
+        if (address(usdc) != shelfToken) revert SettlementTokenMismatch(address(usdc), shelfToken);
+        address escrowToken = address(escrow.USDC());
+        if (escrowToken != shelfToken) revert SettlementTokenMismatch(escrowToken, shelfToken);
         USDC = usdc;
         SHELF = shelf;
         ESCROW = escrow;
@@ -41,19 +56,41 @@ contract InvoiceMemoRouter is ReentrancyGuard {
 
     /// @notice the memoId is the canonical Arc-Memo reconciliation key for this installment.
     function memoIdOf(uint256 invoiceId, uint8 installment) public pure returns (bytes32) {
-        return keccak256(abi.encodePacked(invoiceId, installment));
+        return InvoiceInstallmentKey.memoId(invoiceId, installment);
     }
 
     /// @notice pay an installment. Pulls USDC from the debtor and binds it in escrow to the
     ///         invoice; settlement applies it out-of-band (keeps this path minimal + safe).
     function pay(uint256 invoiceId, uint8 installment, uint256 amount) external nonReentrant {
         if (amount == 0) revert ZeroAmount();
+        address shelfEscrow = SHELF.escrow();
+        if (shelfEscrow != address(ESCROW)) revert CanonicalEscrowMismatch(address(ESCROW), shelfEscrow);
         if (SHELF.invoiceStatus(invoiceId) != IInvoiceShelf.Status.Funded) revert InvoiceNotFunded(invoiceId);
+        address expectedPayer = SHELF.debtorPayerOf(invoiceId);
+        if (msg.sender != expectedPayer) revert UnauthorizedPayer(invoiceId, msg.sender, expectedPayer);
+        (uint8 expectedInstallment, uint256 fullAmount, uint256 paidAmount, uint256 maturity, uint256 graceEndsAt) =
+            SHELF.currentInstallment(invoiceId);
+        if (installment != expectedInstallment) {
+            revert InstallmentMismatch(invoiceId, installment, expectedInstallment);
+        }
+        if (paidAmount > fullAmount) revert InvalidInstallmentAccounting(invoiceId, fullAmount, paidAmount);
+        uint256 shelfRemaining = fullAmount - paidAmount;
+        uint256 pendingEscrow = ESCROW.escrowedOf(invoiceId);
+        if (pendingEscrow > shelfRemaining || amount > shelfRemaining - pendingEscrow) {
+            revert PaymentExceedsInstallmentRemaining(invoiceId, amount, shelfRemaining, pendingEscrow);
+        }
+        if (graceEndsAt <= maturity) revert InvalidRefundWindow(invoiceId, maturity, graceEndsAt);
+        uint256 lockDuration = graceEndsAt - maturity;
+        if (lockDuration > type(uint64).max || block.timestamp > type(uint64).max - lockDuration) {
+            revert RefundUnlockOverflow(invoiceId, block.timestamp, lockDuration);
+        }
+        uint64 refundUnlockAt = uint64(block.timestamp + lockDuration);
 
-        // pull to router, then deposit into escrow (router holds ROUTER_ROLE on escrow)
+        // Pull to the router, then atomically bind custody and the shelf-authoritative
+        // installment grace boundary (router holds ROUTER_ROLE on escrow).
         USDC.safeTransferFrom(msg.sender, address(this), amount);
         USDC.forceApprove(address(ESCROW), amount);
-        ESCROW.deposit(invoiceId, amount, address(this));
+        ESCROW.depositWithRefundLock(invoiceId, amount, address(this), refundUnlockAt);
 
         emit RecibuPayment(invoiceId, installment, memoIdOf(invoiceId, installment), amount, msg.sender);
     }

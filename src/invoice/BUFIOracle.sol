@@ -34,6 +34,7 @@ contract BUFIOracle is AccessControl, IOracle {
 
     error Paused();
     error EmptyTranche();
+    error Uninitialized();
 
     constructor(InvoiceShelf shelf, uint8 tranche, address admin) {
         SHELF = shelf;
@@ -42,24 +43,41 @@ contract BUFIOracle is AccessControl, IOracle {
         _grantRole(OPS_ROLE, admin);
     }
 
-    /// @notice Morpho-facing price. Reverts when tripped (fail-safe, SPEC §6.5).
+    /// @notice Morpho-facing price. Reverts when tripped or when live NAV has moved
+    ///         beyond the observed bound before a keeper persists the trip.
     function price() external view returns (uint256) {
         if (tripped) revert Paused();
-        return _nav();
+        uint256 last = lastObserved;
+        if (last == 0) revert Uninitialized();
+        uint256 p = _nav();
+        if (_deviationBps(p, last) > Params.ORACLE_MAX_INTRABLOCK_MOVE_BPS) revert Paused();
+        return p;
     }
 
     /// @notice keeper poke: observe the current NAV and trip on a >10% move.
-    ///         Anyone may poke — tripping is protective, never extractive.
+    ///         The first observation establishes a lending-critical baseline and is
+    ///         therefore OPS-only. Once seeded, anyone may poke and trip the breaker,
+    ///         but only OPS may move the baseline; an untrusted caller cannot ratchet
+    ///         it through a sequence of sub-threshold changes.
     function observe() external returns (uint256 p) {
-        p = _nav();
         uint256 last = lastObserved;
-        if (last != 0 && _deviationBps(p, last) > Params.ORACLE_MAX_INTRABLOCK_MOVE_BPS) {
+        if (last == 0) {
+            _checkRole(OPS_ROLE, msg.sender);
+            p = _nav();
+            lastObserved = p;
+            emit Observed(p);
+            return p;
+        }
+        p = _nav();
+        if (_deviationBps(p, last) > Params.ORACLE_MAX_INTRABLOCK_MOVE_BPS) {
             tripped = true;
             emit Tripped(last, p);
             return last;
         }
-        lastObserved = p;
-        emit Observed(p);
+        if (hasRole(OPS_ROLE, msg.sender)) {
+            lastObserved = p;
+            emit Observed(p);
+        }
     }
 
     /// @notice ops review clears the breaker and rebases the observation.
