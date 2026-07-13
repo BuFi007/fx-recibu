@@ -64,7 +64,13 @@ contract DeployTestnetFactoring is Script, Deploy {
     uint8 internal constant USDC_CAPS = 3; // CAP_3009 | CAP_PERMIT
 
     function deploy() external {
-        address deployer = msg.sender;
+        // `boot` is the tx sender / bootstrap admin used only for in-run role wiring. It may be a
+        // fresh, uncontended throwaway key (see FINAL_ADMIN) so a busy shared keeper's nonce churn
+        // can't break the sequential CREATE prediction. `admin` is the durable owner (DEFAULT_ADMIN
+        // + operational roles + attestation signer + extractor owner + CRE forwarder placeholder)
+        // that `_handoff` rotates to. When FINAL_ADMIN is unset, admin == boot (single-key deploy).
+        address boot = msg.sender;
+        address admin = vm.envOr("FINAL_ADMIN", boot);
         (address usdcAddr, uint64 chainSelector, bytes32 configId, address relayer) = _chainConfig();
         IERC20 usdc = IERC20(usdcAddr);
 
@@ -73,11 +79,11 @@ contract DeployTestnetFactoring is Script, Deploy {
         Deployment memory d;
 
         // ── identity + credentials ────────────────────────────────────────
-        d.identity = new BUFIIdentityRegistry(deployer);
-        d.reputation = new BUFIReputationRegistry(deployer, IBUFIIdentityRegistry(address(d.identity)));
+        d.identity = new BUFIIdentityRegistry(boot);
+        d.reputation = new BUFIReputationRegistry(boot, IBUFIIdentityRegistry(address(d.identity)));
         d.attestation = new BUAttestation(
-            deployer,
-            deployer, // HSM signer placeholder — rotatable via SIGNER_ADMIN_ROLE
+            boot,
+            admin, // HSM signer = durable admin (keeper) — rotatable via SIGNER_ADMIN_ROLE
             IBUFIIdentityRegistry(address(d.identity)),
             IBUFIReputationRegistry(address(d.reputation))
         );
@@ -87,11 +93,16 @@ contract DeployTestnetFactoring is Script, Deploy {
         );
 
         // ── verifier-first shelf construction (mutual bind via CREATE prediction) ──
-        bytes32 verifierCodehash = keccak256(type(StrictAuthorityInvoiceVerifier).runtimeCode);
-        uint64 nonce = vm.getNonce(deployer);
-        address predictedShelf = vm.computeCreateAddress(deployer, nonce + 1);
+        // Bind the shelf to the verifier's ACTUAL deployed codehash (read live, post-deploy)
+        // rather than keccak256(type(...).runtimeCode). The two are bit-identical on Fuji; on
+        // Arc's fork spec the compile-time constant diverges from the deployed codehash, so
+        // reading it from the just-deployed instance keeps the shelf's `received == expected`
+        // codehash binding self-consistent on any chain while preserving the anti-swap invariant.
+        uint64 nonce = vm.getNonce(boot);
+        address predictedShelf = vm.computeCreateAddress(boot, nonce + 1);
         StrictAuthorityInvoiceVerifier verifier =
             new StrictAuthorityInvoiceVerifier(ReceivableCommitment.VERSION, configId, block.chainid, predictedShelf);
+        bytes32 verifierCodehash = address(verifier).codehash;
         d.shelf = new InvoiceShelf(
             usdc,
             IBUFIIdentityRegistry(address(d.identity)),
@@ -102,26 +113,26 @@ contract DeployTestnetFactoring is Script, Deploy {
             configId,
             block.chainid,
             verifierCodehash,
-            deployer
+            boot
         );
         require(address(d.shelf) == predictedShelf, "shelf CREATE prediction mismatch");
 
         // ── tranche NAV oracles (A=senior, B=mezz, C=junior) ──────────────
-        d.oracleA = new BUFIOracle(d.shelf, 0, deployer);
-        d.oracleB = new BUFIOracle(d.shelf, 1, deployer);
-        d.oracleC = new BUFIOracle(d.shelf, 2, deployer);
+        d.oracleA = new BUFIOracle(d.shelf, 0, boot);
+        d.oracleB = new BUFIOracle(d.shelf, 1, boot);
+        d.oracleC = new BUFIOracle(d.shelf, 2, boot);
 
         // ── rails ─────────────────────────────────────────────────────────
-        d.reserve = new WorkspaceOperatingReserve(usdc, deployer);
-        d.escrow = new ReceivableEscrow(usdc, deployer);
+        d.reserve = new WorkspaceOperatingReserve(usdc, boot);
+        d.escrow = new ReceivableEscrow(usdc, boot);
         d.shelf.setEscrow(address(d.escrow)); // must precede memo router / settlement / extractor
         d.router = new InvoiceMemoRouter(usdc, IInvoiceShelf(address(d.shelf)), d.escrow);
-        d.memoRouter = new RecibuMemoRouter(IInvoiceShelf(address(d.shelf)), deployer);
+        d.memoRouter = new RecibuMemoRouter(IInvoiceShelf(address(d.shelf)), boot);
         d.memoRouter.setToken(usdcAddr, true, USDC_CAPS, d.escrow);
-        d.settlement = new InvoiceSettlement(usdc, IInvoiceShelf(address(d.shelf)), d.escrow, deployer);
+        d.settlement = new InvoiceSettlement(usdc, IInvoiceShelf(address(d.shelf)), d.escrow, boot);
         d.extractor = new FactoringSettlementExtractor(
-            deployer, // owner
-            deployer, // forwarder placeholder — setForwarder when Early Access grants real address
+            admin, // owner = durable admin (keeper) — required by _handoff owner check
+            admin, // forwarder placeholder = keeper — setForwarder when Early Access grants real address
             PLACEHOLDER_WORKFLOW_ID,
             chainSelector,
             IInvoiceShelfTarget(address(d.shelf)),
@@ -130,26 +141,26 @@ contract DeployTestnetFactoring is Script, Deploy {
 
         // ── KYB attestation CRE receiver (forwards signed reports to BUAttestation) ──
         KybAttestationExtractor kybExtractor = new KybAttestationExtractor(
-            deployer,
-            deployer, // forwarder placeholder — setForwarder when Early Access grants real address
+            admin,
+            admin, // forwarder placeholder = keeper — setForwarder when Early Access grants real address
             chainSelector,
             IKybReportReceiver(address(d.attestation))
         );
 
-        // ── role wiring + admin handoff (deployer stays admin: admin == boot) ──
+        // ── role wiring (by boot) + admin handoff to the durable keeper ──
         _wireRoles(d);
-        _handoff(d, deployer, deployer);
+        _handoff(d, admin, boot);
 
         // ── grant the Circle gasless-relayer SCA the ERC-3009 memo ingress role ──
         // Arc has no dedicated Circle relayer wallet; the keeper (already MEMO_RELAYER via
         // _handoff) is the interim relayer there, so `relayer` is zero and this is skipped.
-        if (relayer != address(0) && relayer != deployer) {
+        if (relayer != address(0) && relayer != admin) {
             d.memoRouter.grantRole(d.memoRouter.MEMO_RELAYER_ROLE(), relayer);
         }
 
         vm.stopBroadcast();
 
-        _log(d, verifier, kybExtractor, relayer);
+        _log(d, verifier, kybExtractor, relayer == address(0) ? admin : relayer);
     }
 
     function _chainConfig()

@@ -1,0 +1,278 @@
+{
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "role": "trading-hub",
+  "hubTopology": "fx-telara\u00f1a: Arc = trading hub, Fuji = money-market hub. This is the fx-Recibu invoice-factoring rail on the Arc hub.",
+  "deployedAt": "2026-07-13",
+  "deployer": "0x8b37e1866c2dD9C4d185039F013523AC5396B492",
+  "deployerNote": "Fresh, single-use throwaway EOA funded 1.5 native USDC by the telara\u00f1a keeper. Used ONLY as tx sender because the shared keeper is too nonce-contended for a 68-tx sequential broadcast. It holds NO role after deploy (renounced DEFAULT_ADMIN in _handoff; verified shelf.hasRole(DEFAULT_ADMIN, deployer)=false). Residual gas swept back to the keeper.",
+  "admin": "0xcA02Be6cDBb806d4a327FC92E094D1A44EC37445",
+  "adminNote": "Durable DEFAULT_ADMIN + operational roles + BUAttestation signer + extractor owner + CRE forwarder placeholder, all rotated to the keeper via _handoff (verified on-chain).",
+  "usdc": "0x3600000000000000000000000000000000000000",
+  "usdcNote": "Arc native-gas USDC, 6-dec; ERC-3009 (RECEIVE_WITH_AUTHORIZATION_TYPEHASH 0xd099cc98\u2026413de8) + ERC-2612 verified on-chain. Registered on RecibuMemoRouter with caps=3 (CAP_3009|CAP_PERMIT).",
+  "chainSelector": "5040923346571241210",
+  "verifier": "StrictAuthorityInvoiceVerifier",
+  "verifierAddress": "0x5052177ACb560E4BfDbFE508FCF218C010be0613",
+  "verifierCodehash": "0xa9e3bb6e700b37cec03d8bb6d0f05f74ba0692be13cad60d500de130275ddb57",
+  "verifierNote": "TESTNET-ONLY deterministic authority verifier; codehash byte-identical to the Fuji deployment (same hardened bytecode). Production requires an owner-reviewed IAuthorityInvoiceVerifier + accepted authority artifact (Deploy.run() stays disabled).",
+  "verifierConfigId": "0x06af4e2af873b52dedfdd1794df0bb42fdad90c2a2fe1aca35b5d0812d04a2be",
+  "verifierConfigIdSource": "keccak256(\"BUFI_ARC_TESTNET_AUTHORITY_V1\")",
+  "forwarder": "0xcA02Be6cDBb806d4a327FC92E094D1A44EC37445",
+  "forwarderNote": "PLACEHOLDER = keeper (CRE Early Access pattern). setForwarder to the real Chainlink KeystoneForwarder on both extractors when Early Access is granted.",
+  "workflowIdPlaceholder": "keccak256(\"fx-recibu-testnet-factoring-placeholder-v1\")",
+  "relayer": "0xcA02Be6cDBb806d4a327FC92E094D1A44EC37445",
+  "relayerNote": "FLAG: Arc has NO dedicated Circle relayer wallet (5042002 absent from GASLESS_RELAYER_CIRCLE_WALLET_IDS). The keeper is the INTERIM MEMO_RELAYER (held via _handoff). Grant the real Circle DCW SCA on RecibuMemoRouter once a 5042002 relayer wallet is provisioned.",
+  "eurcNote": "EURC (Arc 0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a) NOT registered \u2014 RecibuMemoRouter is single-canonical-token (USDC); alternate-token settlement is fail-closed until an FX conversion layer lands.",
+  "contracts": {
+    "BUFIIdentityRegistry": "0x7cdD6CDaf2aB82d9B7eB318eEAf45f0313683514",
+    "BUFIReputationRegistry": "0x0B076E893772c900F23664F40BF6e7cD20717193",
+    "BUAttestation": "0x1aa92edBcf7331B88B10872d6da347Cc495A569A",
+    "KybWorkspacePolicy": "0x6a034962Dc9FaDc6B891D9D4A86Daea934956C41",
+    "KybAttestationExtractor": "0x0F46350Bc123d108acc26F2191009E3125440559",
+    "WorkspaceTierRegistry": "0x3C3b738e06aB47A1851D19efD4c65Af94d58F0ec",
+    "StrictAuthorityInvoiceVerifier": "0x5052177ACb560E4BfDbFE508FCF218C010be0613",
+    "InvoiceShelf": "0x556746297b447dFaC7615e73b079e2f0ecF20b3e",
+    "BINV": "0xe0ff806B1Bc7Bc35EA7282346121EFF153159bD0",
+    "BUFIOracleSenior": "0xEF22019DE087057042f07892a0AC21e0734f590d",
+    "BUFIOracleMezz": "0xd38218C8909E9d7ef236056c7b2Aa2C3bE64Fe22",
+    "BUFIOracleJunior": "0x6785D529Fd45CEE134B4Ed630517F7e3702c0fBB",
+    "WorkspaceOperatingReserve": "0x9793393A45171F625e76e9d096c33ac40c11396A",
+    "ReceivableEscrow": "0xfb0FAEED573A7d0fE89A1bAC8D395b9B054d1ddf",
+    "InvoiceMemoRouter": "0xA87e5696607FcEd0b55efC3834c3b8033dBb6D09",
+    "RecibuMemoRouter": "0x9e3c1E2AEB70Fe469509968E6B9b235Bc11AfA21",
+    "InvoiceSettlement": "0x303eB6179bEAEb7cAea7741C21CF21e220018069",
+    "FactoringSettlementExtractor": "0x55b5376d74b051A8803f6Bf7239C24ec7d2b5809"
+  },
+  "deployTxHashes": {
+    "BUFIIdentityRegistry": "0x1a150ebdc67f21ec9403628792915993bfdcebfc2b5082b00621fa7c00532175",
+    "BUFIReputationRegistry": "0x468ca264f276083a45e5c4a238d7324eb19f30df09a80b8a7326b8e10619a4cb",
+    "BUAttestation": "0x85720e7e88f418260b5e42bebf980e51d6eda3f3e1fc98c3778c78936fccbb43",
+    "KybWorkspacePolicy": "0x5eef29113c162740d40b6fdbd5d3f9abb5160f33ad05116d9227b899a7a0eae0",
+    "WorkspaceTierRegistry": "0x4e90c6c8d5ca92f48c8c2113b9bf377366d1b093e05516f36e4bfba3cc6ef68b",
+    "StrictAuthorityInvoiceVerifier": "0x071724b66826f0729b3007151f258c421e1a6fa06dfa9384c1cb1461b65b2c64",
+    "InvoiceShelf": "0xac8aacd961a55c4a5271822110362f64a4b24acbf69e5a7cfa03407ee671524c",
+    "BUFIOracleSenior": "0xb3969caf9eaf59a9b128b8419ff9f00628d1578b05b1b6c1b3278c4c3a55060f",
+    "BUFIOracleMezz": "0x7932fdfead1f6041416d93b6dbb8d4d049646262e185ef51baca2a7894045934",
+    "BUFIOracleJunior": "0x84c4bc0e344c4b5ac60b531668e54f537835d015c176e96984d381e7929d210c",
+    "WorkspaceOperatingReserve": "0x9303a415fec899300b756888eba3902ddda9664a1f7b600b031cbb4079676178",
+    "ReceivableEscrow": "0x1d8001b195fcce22f6afa6a376e8b43c26ac3f801ec134cb4a07e9d248f98384",
+    "InvoiceMemoRouter": "0x76bc008f78e6b999c325f53da6928e9d7f21dee8c87eb4b7b720bd777ce02b78",
+    "RecibuMemoRouter": "0xb94aa7cacda309ea0bdf80355bff4238274ff9e12f5b09b2b7cad823bb5ce79d",
+    "InvoiceSettlement": "0x9e5bbd6729d35431ebc415b368b0899b2d1a200c6cb3a4c00dd68b5eb9d21b2f",
+    "FactoringSettlementExtractor": "0x4342952281f61c2c86de1b39f977e11da4ea122ac1472a3109ad812468a76484",
+    "KybAttestationExtractor": "0xee6de3b76d647e8c8dd95c87e15532107628216028b1f6958513bf98da1563a9"
+  },
+  "blockRange": {
+    "from": 51546932,
+    "to": 51547197
+  },
+  "roleGrants": [
+    {
+      "on": "BUFIReputationRegistry",
+      "role": "ATTESTOR_ROLE",
+      "grantee": "BUAttestation",
+      "tx": "0x89379733ce28818e7e7b74f2ac0d90300f92c60963b056121e167f1ef4b3faa9"
+    },
+    {
+      "on": "BUFIIdentityRegistry",
+      "role": "ISSUER_ROLE",
+      "grantee": "BUAttestation",
+      "tx": "0xf98f3d4bef047e01e455ade2e14432d66bf6719fa06359481e09afb17cb53cfd"
+    },
+    {
+      "on": "BUFIReputationRegistry",
+      "role": "SETTLEMENT_ROLE",
+      "grantee": "InvoiceShelf",
+      "tx": "0x32f29887967e7caa0088f1ea1be0782af6377ee4f1c268e3834372c3d2786e3f"
+    },
+    {
+      "on": "BUFIReputationRegistry",
+      "role": "OPS_ROLE",
+      "grantee": "InvoiceShelf",
+      "tx": "0xf7fe16a0a670e1ce2575e7c4c50c529e74af061598dd38892181a103933a3dbb"
+    },
+    {
+      "on": "InvoiceShelf",
+      "role": "SETTLEMENT_ROLE",
+      "grantee": "InvoiceSettlement",
+      "tx": "0xfaf76622780f5835712b111cb9432755c508b5b0721de16952b27da8d118af98"
+    },
+    {
+      "on": "InvoiceShelf",
+      "role": "SERVICER_ROLE",
+      "grantee": "FactoringSettlementExtractor",
+      "tx": "0xa15d6a8ce311cb6e568870d21d09e35844d892f37a9a0fdd83719609c58011f5"
+    },
+    {
+      "on": "ReceivableEscrow",
+      "role": "ROUTER_ROLE",
+      "grantee": "InvoiceMemoRouter",
+      "tx": "0x316abcb6c5ec24a377a65f6b343eb494a8e1b3405f80335febb35464c6bcb65f"
+    },
+    {
+      "on": "ReceivableEscrow",
+      "role": "ROUTER_ROLE",
+      "grantee": "RecibuMemoRouter",
+      "tx": "0x679e08e9fbcdeb84bad39542f7d95e286c51b7a16a16e63bc6d042c7f404ce76"
+    },
+    {
+      "on": "ReceivableEscrow",
+      "role": "SETTLEMENT_ROLE",
+      "grantee": "InvoiceSettlement",
+      "tx": "0xe3a1e89f9782388d897ec5c0003b57c88c261a5f4fc46d6293939832a6681e67"
+    },
+    {
+      "on": "InvoiceSettlement",
+      "role": "KEEPER_ROLE",
+      "grantee": "FactoringSettlementExtractor",
+      "tx": "0xdfb7541bf54ac52423486cebf4889ae7e9ea9a76587ffbe301b0779403671f1f"
+    },
+    {
+      "on": "WorkspaceOperatingReserve",
+      "role": "SHELF_ROLE",
+      "grantee": "InvoiceShelf",
+      "tx": "0x9bd90b332f0c049685f33c160b91ad0143f2d18a4d469d659dc3625b210b998a"
+    },
+    {
+      "on": "BUFIIdentityRegistry",
+      "role": "ISSUER_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x056036cb4842267707071bf098e857a1acb1f6aa13725e266a495e0022cb8ba9"
+    },
+    {
+      "on": "BUAttestation",
+      "role": "SIGNER_ADMIN_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0xa6d7e15b1c469ac6e83d64b47df30ce594dcd7b7ea9430ab424cb825e878de77"
+    },
+    {
+      "on": "InvoiceShelf",
+      "role": "SERVICER_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x4b74fea14193cf434ca974c1b28afcd67daea0a59c536b25fac0c95fefcb2ad1"
+    },
+    {
+      "on": "InvoiceShelf",
+      "role": "OPS_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x39d3a29d86d26731a42f1ef4d17829409c8cde2c3f7bb91d4252c54d61e2e19f"
+    },
+    {
+      "on": "ReceivableEscrow",
+      "role": "ARBITER_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x1004927e78dcf7db5ae41736d0d14ec368bbc98282cc14d50785ebd7fd53346b"
+    },
+    {
+      "on": "InvoiceSettlement",
+      "role": "KEEPER_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x8bfd70f6aff47da9176ca1c20addb796da3d37248d5161d992b4ba5c4bec0abf"
+    },
+    {
+      "on": "RecibuMemoRouter",
+      "role": "MEMO_RELAYER_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x8442d011c6ce321a0c4267f507af3e36b155b728f1978303beb941b02385e56d"
+    },
+    {
+      "on": "BUFIOracleSenior",
+      "role": "OPS_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0xf6186ade1721c3cfe179aca85381e2b3bb82ff41f8a9f6111e66c7a8f4b45cbb"
+    },
+    {
+      "on": "BUFIOracleMezz",
+      "role": "OPS_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0xfb7cc5dd8f460258b34374ef1debdaaef304a9ea49426059d4924d577ad0c35f"
+    },
+    {
+      "on": "BUFIOracleJunior",
+      "role": "OPS_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x24776557739d03e6e12556492e986ea9f666029cf9888e512e10cbce0a0a95f9"
+    },
+    {
+      "on": "BUFIIdentityRegistry",
+      "role": "DEFAULT_ADMIN_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x9868571be496e0b43a69993282286e96b1981306ea34f831ef82db90adecbaf1"
+    },
+    {
+      "on": "BUFIReputationRegistry",
+      "role": "DEFAULT_ADMIN_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0xc5453628f2a65e2678e1a567f4e544a2f2616264b7dba67392e56d29c336c61d"
+    },
+    {
+      "on": "BUAttestation",
+      "role": "DEFAULT_ADMIN_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x9d4959febf45c7542e325cf3ebe36a617cb493ba16c31ee1171a1f4013ee2077"
+    },
+    {
+      "on": "InvoiceShelf",
+      "role": "DEFAULT_ADMIN_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x3de2b556a87244f4bd6df261520e3b9644e4102f68c602be9e57126bc98867e0"
+    },
+    {
+      "on": "WorkspaceOperatingReserve",
+      "role": "DEFAULT_ADMIN_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0xe21dc9111e194a7f8e27776dc4eb5ead69d41fdd85de97ebbb7eb568df741920"
+    },
+    {
+      "on": "ReceivableEscrow",
+      "role": "DEFAULT_ADMIN_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x56970f28374b0d76b92152992b28b0285ff363283a0841090c64d7def404f119"
+    },
+    {
+      "on": "InvoiceSettlement",
+      "role": "DEFAULT_ADMIN_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0xef2f5d2b6c3f7c62b42893ed908c8aa07ba3f8f000c1bec66971351f3bd89988"
+    },
+    {
+      "on": "RecibuMemoRouter",
+      "role": "DEFAULT_ADMIN_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x0391f4c31b1a6e7b8c62610dd0a94d3bf2b183b79ca6263a4b62c9bf34fdc758"
+    },
+    {
+      "on": "BUFIOracleSenior",
+      "role": "DEFAULT_ADMIN_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0xa393ce15328b796f9aa39502cf64af9dc045e97cf67baa0d9e71ce4c11d01187"
+    },
+    {
+      "on": "BUFIOracleMezz",
+      "role": "DEFAULT_ADMIN_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x87e0c442752b5cc430747a61753e52a817d6d4d6b8f3bab763d3291959b2c41b"
+    },
+    {
+      "on": "BUFIOracleJunior",
+      "role": "DEFAULT_ADMIN_ROLE",
+      "grantee": "KEEPER",
+      "tx": "0x4f4ca97c6d616c89b7f8c2107182a496f1bf48d17d3d22b985b89e3ac3df5f81"
+    }
+  ],
+  "smoke": "router.SHELF/extractor.SHELF/extractor.SETTLEMENT/shelf.AUTHORITY_VERIFIER bind correctly; verifier codehash==0xa9e3bb6e (hardened); shelf.hasRole(SERVICER,extractor)=true; settlement.hasRole(KEEPER,extractor)=true; shelf.hasRole(DEFAULT_ADMIN,keeper)=true & (deployer)=false; router.hasRole(MEMO_RELAYER,keeper)=true; extractor.owner=keeper; attestation.signer=keeper; tokenConfig(usdc)=(true,3,escrow); memoAuthorizationNonceOf returns bytes32.",
+  "external": {
+    "USDC": "0x3600000000000000000000000000000000000000",
+    "EURC": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a",
+    "CctpDomain": 26,
+    "GatewayWallet": "0x0077777d7EBA4688BDeF3E311b846F25870A19B9",
+    "GatewayMinter": "0x0022222ABE238Cc2C7Bb1f21003F0a260052475B",
+    "source": "fx-telara\u00f1a packages/contracts/deployments/telarana-arc-testnet.json (external section)"
+  },
+  "supersedes": {
+    "file": "deployments/arc-testnet.json",
+    "reason": "The legacy 2026-07-02 arc-testnet.json is the PRE-HARDENED protocol (no AUTHORITY_VERIFIER binding, no RecibuMemoRouter / FactoringSettlementExtractor / KybWorkspacePolicy / KybAttestationExtractor). This v2 is the hardened port (fx-recibu PR #1, 261/261 forge tests). Left as a separate file; the legacy manifest is not overwritten."
+  },
+  "buildFix": "forge auto-detected Arc's chain id as a pre-Cancun spec, mis-computing the verifier's EXTCODEHASH inside the shelf constructor during local simulation (spurious VerifierDeploymentMismatch). Real Arc computes it correctly (probe verifier codehash == canonical). Broadcast with --evm-version cancun.",
+  "broadcast": "broadcast/DeployTestnetFactoring.s.sol/5042002/deploy-latest.json (all 68 tx receipts, incl. wiring + boot->keeper handoff)."
+}
