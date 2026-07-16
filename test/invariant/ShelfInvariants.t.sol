@@ -81,8 +81,10 @@ contract ShelfHandler is Test {
         _approve(terms, seller, debtor, face, firstMaturity);
 
         ++lockAttempts;
+        bytes32 expectedCommitment = _expectedCommitment(seller, debtor, face, firstMaturity, terms, docs);
         vm.prank(servicer);
-        uint256 originalInvoiceId = shelf.lockInvoice(seller, debtor, face, 2, firstMaturity, 30 days, terms, docs);
+        uint256 originalInvoiceId =
+            shelf.lockInvoice(seller, debtor, face, 2, firstMaturity, 30 days, terms, docs, expectedCommitment);
         _recordSuccessfulLock(originalInvoiceId, authorityInvoiceId);
 
         ReceivableCommitment.FundingTerms memory changedTerms = terms;
@@ -93,8 +95,11 @@ contract ShelfHandler is Test {
 
         ++lockAttempts;
         ++duplicateAttempts;
+        expectedCommitment = _expectedCommitment(seller, debtor, face, firstMaturity, changedTerms, changedDocs);
         vm.prank(servicer);
-        try shelf.lockInvoice(seller, debtor, face, 2, firstMaturity, 30 days, changedTerms, changedDocs) returns (
+        try shelf.lockInvoice(
+            seller, debtor, face, 2, firstMaturity, 30 days, changedTerms, changedDocs, expectedCommitment
+        ) returns (
             uint256
         ) {
             ++duplicateSuccesses;
@@ -115,11 +120,13 @@ contract ShelfHandler is Test {
         bytes32 authorityInvoiceId = _nextAuthorityInvoiceId();
         ReceivableCommitment.FundingTerms memory terms = _terms(authorityInvoiceId);
         _approve(terms, seller, debtor, face, firstMaturity);
+        BINV.DocBundle memory docs = _docs(authorityInvoiceId);
+        bytes32 expectedCommitment = _expectedCommitment(seller, debtor, face, firstMaturity, terms, docs);
 
         ++lockAttempts;
         vm.prank(servicer);
         try shelf.lockInvoice(
-            seller, debtor, face, 2, firstMaturity, 30 days, terms, _docs(authorityInvoiceId)
+            seller, debtor, face, 2, firstMaturity, 30 days, terms, docs, expectedCommitment
         ) returns (
             uint256 invoiceId
         ) {
@@ -216,6 +223,19 @@ contract ShelfHandler is Test {
     ) internal {
         authorityVerifier.setApproval(
             terms.authority, seller, debtor, address(usdc), face, terms.recourse, 2, firstMaturity, 30 days, true
+        );
+    }
+
+    function _expectedCommitment(
+        uint256 seller,
+        uint256 debtor,
+        uint128 face,
+        uint64 firstMaturity,
+        ReceivableCommitment.FundingTerms memory terms,
+        BINV.DocBundle memory docs
+    ) internal view returns (bytes32) {
+        return shelf.previewReceivableCommitment(
+            seller, debtor, face, 2, firstMaturity, 30 days, terms, docs.assignmentHash
         );
     }
 

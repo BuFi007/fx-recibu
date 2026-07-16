@@ -215,8 +215,10 @@ contract DeployIntegrationTest is StrictAuthorityFixture {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(authorityVerifier, seller, debtor, address(usdc), 500e6, 2, firstMaturity, 30 days);
-        vm.prank(admin);
-        uint256 invoiceId = d.shelf.lockInvoice(seller, debtor, 500e6, 2, firstMaturity, 30 days, terms, _bundle());
+        vm.startPrank(admin);
+        uint256 invoiceId =
+            _lockInvoiceBound(d.shelf, seller, debtor, 500e6, 2, firstMaturity, 30 days, terms, _bundle());
+        vm.stopPrank();
         assertEq(d.shelf.BINV_TOKEN().ownerOf(invoiceId), sellerOwner);
         assertEq(usdc.balanceOf(sellerOwner), 425e6);
 

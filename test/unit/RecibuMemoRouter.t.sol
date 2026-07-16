@@ -92,8 +92,9 @@ contract RecibuMemoRouterTest is StrictAuthorityFixture {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(authorityVerifier, seller, debtor, address(usdc), FACE, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        invId = shelf.lockInvoice(seller, debtor, FACE, 2, firstMaturity, 30 days, terms, _docs());
+        vm.startPrank(servicer);
+        invId = _lockInvoiceBound(shelf, seller, debtor, FACE, 2, firstMaturity, 30 days, terms, _docs());
+        vm.stopPrank();
 
         usdc.mint(payer, 1_000_000e6);
         alternate.mint(payer, 1_000_000e6);
@@ -510,8 +511,9 @@ contract RecibuMemoRouterTest is StrictAuthorityFixture {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(authorityVerifier, seller, debtorAgentId, address(usdc), face, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        id = shelf.lockInvoice(seller, debtorAgentId, face, 2, firstMaturity, 30 days, terms, _docs());
+        vm.startPrank(servicer);
+        id = _lockInvoiceBound(shelf, seller, debtorAgentId, face, 2, firstMaturity, 30 days, terms, _docs());
+        vm.stopPrank();
     }
 
     function _ws(string memory tag, address owner_, uint8 s, uint8 d) internal returns (uint256 id) {

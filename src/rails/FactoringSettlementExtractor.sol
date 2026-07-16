@@ -38,7 +38,8 @@ interface IInvoiceShelfTarget {
         uint64 firstMaturity,
         uint32 interval,
         ReceivableCommitment.FundingTerms calldata terms,
-        BINV.DocBundle calldata docs
+        BINV.DocBundle calldata docs,
+        bytes32 expectedReceivableCommitment
     ) external returns (uint256 invoiceId);
 }
 
@@ -68,7 +69,7 @@ interface IReceivableEscrowTokenView {
 ///   LOCK    (2): abi.encode(address token, uint256 sellerAgentId, uint256 debtorAgentId,
 ///                           uint128 face, uint8 nInstallments, uint64 firstMaturity,
 ///                           uint32 interval, ReceivableCommitment.FundingTerms terms,
-///                           BINV.DocBundle docs)
+///                           BINV.DocBundle docs, bytes32 expectedReceivableCommitment)
 ///   DEFAULT (3): abi.encode(uint256 invoiceId), dispatched through InvoiceSettlement so
 ///                canonical escrow is atomically applied before objective default evaluation.
 ///
@@ -295,7 +296,8 @@ contract FactoringSettlementExtractor is IReceiver, ERC165, Ownable2Step, Pausab
             uint64 firstMaturity,
             uint32 interval,
             ReceivableCommitment.FundingTerms memory terms,
-            BINV.DocBundle memory docs
+            BINV.DocBundle memory docs,
+            bytes32 expectedReceivableCommitment
         ) = abi.decode(
             actionPayload,
             (
@@ -307,13 +309,23 @@ contract FactoringSettlementExtractor is IReceiver, ERC165, Ownable2Step, Pausab
                 uint64,
                 uint32,
                 ReceivableCommitment.FundingTerms,
-                BINV.DocBundle
+                BINV.DocBundle,
+                bytes32
             )
         );
         if (token != SHELF_TOKEN) revert UnexpectedToken(ACTION_LOCK, token, SHELF_TOKEN);
 
-        uint256 invoiceId =
-            SHELF.lockInvoice(sellerAgentId, debtorAgentId, face, nInstallments, firstMaturity, interval, terms, docs);
+        uint256 invoiceId = SHELF.lockInvoice(
+            sellerAgentId,
+            debtorAgentId,
+            face,
+            nInstallments,
+            firstMaturity,
+            interval,
+            terms,
+            docs,
+            expectedReceivableCommitment
+        );
         emit InvoiceLockExecuted(operationId, target, invoiceId);
     }
 

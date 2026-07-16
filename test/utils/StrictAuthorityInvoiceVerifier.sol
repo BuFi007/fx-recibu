@@ -10,6 +10,7 @@ import {IAuthorityInvoiceVerifier} from "../../src/interfaces/IAuthorityInvoiceV
 import {WorkspaceTierRegistry} from "../../src/credit/WorkspaceTierRegistry.sol";
 import {InvoiceShelf} from "../../src/invoice/InvoiceShelf.sol";
 import {ReceivableCommitment} from "../../src/libraries/ReceivableCommitment.sol";
+import {BINV} from "../../src/invoice/BINV.sol";
 
 /// @notice Deterministic, stateful test double. It is deliberately mutable so
 ///         shelf tests can prove that runtime codehash alone is not a policy.
@@ -297,6 +298,180 @@ abstract contract StrictAuthorityFixture is Test {
         terms = _fundingTerms(_nextAuthorityInvoiceId());
         _approveFunding(
             verifier, terms, sellerAgentId, debtorAgentId, currency, faceAmount, nInstallments, firstMaturity, interval
+        );
+    }
+
+    function _previewReceivableCommitment(
+        InvoiceShelf shelf,
+        uint256 sellerAgentId,
+        uint256 debtorAgentId,
+        uint128 face,
+        uint8 nInstallments,
+        uint64 firstMaturity,
+        uint32 interval,
+        ReceivableCommitment.FundingTerms memory terms,
+        BINV.DocBundle memory docs
+    ) internal view returns (bytes32) {
+        return shelf.previewReceivableCommitment(
+            sellerAgentId, debtorAgentId, face, nInstallments, firstMaturity, interval, terms, docs.assignmentHash
+        );
+    }
+
+    function _lockInvoiceWithExpectedCommitment(
+        InvoiceShelf shelf,
+        uint256 sellerAgentId,
+        uint256 debtorAgentId,
+        uint128 face,
+        uint8 nInstallments,
+        uint64 firstMaturity,
+        uint32 interval,
+        ReceivableCommitment.FundingTerms memory terms,
+        BINV.DocBundle memory docs,
+        bytes32 expectedReceivableCommitment
+    ) internal returns (uint256 invoiceId) {
+        invoiceId = shelf.lockInvoice(
+            sellerAgentId,
+            debtorAgentId,
+            face,
+            nInstallments,
+            firstMaturity,
+            interval,
+            terms,
+            docs,
+            expectedReceivableCommitment
+        );
+    }
+
+    /// @dev Test-only convenience that previews and passes the same nonzero
+    ///      commitment required by the production call. Callers using one-shot
+    ///      `vm.prank` must preview before applying the prank or use startPrank.
+    function _lockInvoiceBound(
+        InvoiceShelf shelf,
+        uint256 sellerAgentId,
+        uint256 debtorAgentId,
+        uint128 face,
+        uint8 nInstallments,
+        uint64 firstMaturity,
+        uint32 interval,
+        ReceivableCommitment.FundingTerms memory terms,
+        BINV.DocBundle memory docs
+    ) internal returns (uint256 invoiceId) {
+        bytes32 expectedReceivableCommitment = _previewReceivableCommitment(
+            shelf, sellerAgentId, debtorAgentId, face, nInstallments, firstMaturity, interval, terms, docs
+        );
+        assertNotEq(expectedReceivableCommitment, bytes32(0), "preview commitment must be nonzero");
+        invoiceId = _lockInvoiceWithExpectedCommitment(
+            shelf,
+            sellerAgentId,
+            debtorAgentId,
+            face,
+            nInstallments,
+            firstMaturity,
+            interval,
+            terms,
+            docs,
+            expectedReceivableCommitment
+        );
+    }
+
+    function _lockInvoiceBoundExpectRevert(
+        bytes memory expectedRevert,
+        address caller,
+        InvoiceShelf shelf,
+        uint256 sellerAgentId,
+        uint256 debtorAgentId,
+        uint128 face,
+        uint8 nInstallments,
+        uint64 firstMaturity,
+        uint32 interval,
+        ReceivableCommitment.FundingTerms memory terms,
+        BINV.DocBundle memory docs
+    ) internal {
+        bytes32 expectedReceivableCommitment =
+            _previewReceivableCommitment(
+                shelf, sellerAgentId, debtorAgentId, face, nInstallments, firstMaturity, interval, terms, docs
+            );
+        assertNotEq(expectedReceivableCommitment, bytes32(0), "preview commitment must be nonzero");
+        vm.prank(caller);
+        vm.expectRevert(expectedRevert);
+        _lockInvoiceWithExpectedCommitment(
+            shelf,
+            sellerAgentId,
+            debtorAgentId,
+            face,
+            nInstallments,
+            firstMaturity,
+            interval,
+            terms,
+            docs,
+            expectedReceivableCommitment
+        );
+    }
+
+    function _lockInvoiceBoundExpectRevert(
+        bytes4 expectedRevert,
+        address caller,
+        InvoiceShelf shelf,
+        uint256 sellerAgentId,
+        uint256 debtorAgentId,
+        uint128 face,
+        uint8 nInstallments,
+        uint64 firstMaturity,
+        uint32 interval,
+        ReceivableCommitment.FundingTerms memory terms,
+        BINV.DocBundle memory docs
+    ) internal {
+        bytes32 expectedReceivableCommitment =
+            _previewReceivableCommitment(
+                shelf, sellerAgentId, debtorAgentId, face, nInstallments, firstMaturity, interval, terms, docs
+            );
+        assertNotEq(expectedReceivableCommitment, bytes32(0), "preview commitment must be nonzero");
+        vm.prank(caller);
+        vm.expectRevert(expectedRevert);
+        _lockInvoiceWithExpectedCommitment(
+            shelf,
+            sellerAgentId,
+            debtorAgentId,
+            face,
+            nInstallments,
+            firstMaturity,
+            interval,
+            terms,
+            docs,
+            expectedReceivableCommitment
+        );
+    }
+
+    function _lockInvoiceBoundExpectAnyRevert(
+        address caller,
+        InvoiceShelf shelf,
+        uint256 sellerAgentId,
+        uint256 debtorAgentId,
+        uint128 face,
+        uint8 nInstallments,
+        uint64 firstMaturity,
+        uint32 interval,
+        ReceivableCommitment.FundingTerms memory terms,
+        BINV.DocBundle memory docs
+    ) internal {
+        bytes32 expectedReceivableCommitment =
+            _previewReceivableCommitment(
+                shelf, sellerAgentId, debtorAgentId, face, nInstallments, firstMaturity, interval, terms, docs
+            );
+        assertNotEq(expectedReceivableCommitment, bytes32(0), "preview commitment must be nonzero");
+        vm.prank(caller);
+        vm.expectRevert();
+        _lockInvoiceWithExpectedCommitment(
+            shelf,
+            sellerAgentId,
+            debtorAgentId,
+            face,
+            nInstallments,
+            firstMaturity,
+            interval,
+            terms,
+            docs,
+            expectedReceivableCommitment
         );
     }
 }

@@ -165,6 +165,48 @@ advance plus holdback to equal face. V1 requires `recourse == true`.
 Non-recourse remains production-disabled until differentiated pricing,
 insurance, recovery, and loss allocation are implemented and approved.
 
+### Cross-language golden vector
+
+The canonical Solidity and TypeScript fixtures use this exact preimage, in the
+field order above:
+
+```text
+domain                       0x49385b4266c49996eacbc5bd06bca8c63684a02c863914baaa554513aa983a3f
+version                      1
+chainId                      5042002
+invoiceShelf                 0x1111111111111111111111111111111111111111
+sellerAgentId                101
+debtorAgentId                202
+authorityInvoiceId           0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+authorityEvidenceCommitment  0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+verifierConfigId             0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+authorityVoucherType         19
+currency                     0x2222222222222222222222222222222222222222
+faceAmount                   1000000000
+recourse                     true
+advanceRateBps               8000
+advanceAmount                800000000
+holdbackAmount               200000000
+issuedAt                     1780000000
+authorityPaymentDueAt        1782592000
+nInstallments                4
+firstMaturity                1780648000
+interval                     648000
+grace                        432000
+tranche                      0
+assignmentHash               0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+```
+
+`keccak256(abi.encode(ReceivablePreimage))` must equal:
+
+```text
+0x829261aa91a44479007c08156fc76e3da44676c422081e816b6d3455227d097a
+```
+
+The shared TypeScript implementation is published by
+`@bufinance/factoring-cre-contract`; the legacy simplified fantasmita
+projection is not this schema and must not be used as an offer producer.
+
 ## Full document-bundle commitment
 
 The five `BINV.DocBundle` content hashes remain distinct from the separately
@@ -218,20 +260,28 @@ abi.encode(
     uint64 firstMaturity,
     uint32 interval,
     ReceivableCommitment.FundingTerms terms,
-    BINV.DocBundle docs
+    BINV.DocBundle docs,
+    bytes32 expectedReceivableCommitment
 )
 ```
 
 The sole shelf signature is:
 
 ```text
-lockInvoice(uint256,uint256,uint128,uint8,uint64,uint32,((uint16,bytes32,bytes32,bytes32,uint8,uint64,uint64),bool),(bytes32,bytes32,bytes32,bytes32,bytes32))
-selector: 0xb8a01dfd
+lockInvoice(uint256,uint256,uint128,uint8,uint64,uint32,((uint16,bytes32,bytes32,bytes32,uint8,uint64,uint64),bool),(bytes32,bytes32,bytes32,bytes32,bytes32),bytes32)
+selector: 0x0743c3df
 ```
 
 The token is signed into the extractor payload and must equal the shelf token;
-it is not repeated in the shelf call. Any wire change requires a new action or
-schema version and a synchronized producer plan.
+it is not repeated in the shelf call. The final `bytes32` is the independently
+approved expected commitment. `InvoiceShelf` recomputes the commitment from
+transaction-time scores, pair history and policy terms and reverts with
+`ReceivableCommitmentMismatch(expected, actual)` before any mutation when the
+preflight value is stale. Any wire change requires a new action or schema
+version and a synchronized producer plan.
+
+Zero is never a sentinel: every chain, including local chain id `31337`, rejects
+an expected value that does not equal the transaction-time recomputation.
 
 ## Cross-chain limitation
 

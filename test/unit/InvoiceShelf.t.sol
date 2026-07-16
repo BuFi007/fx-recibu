@@ -181,8 +181,9 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         ReceivableCommitment.FundingTerms memory terms = _newApprovedTerms(
             authorityVerifier, sellerId, debtorId, address(usdc), face, nInstallments, firstMaturity, 30 days
         );
-        vm.prank(servicer);
-        id = shelf.lockInvoice(sellerId, debtorId, face, nInstallments, firstMaturity, 30 days, terms, _docs());
+        vm.startPrank(servicer);
+        id = _lockInvoiceBound(shelf, sellerId, debtorId, face, nInstallments, firstMaturity, 30 days, terms, _docs());
+        vm.stopPrank();
     }
 
     function _approvedTerms(
@@ -208,8 +209,77 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         ReceivableCommitment.FundingTerms memory terms,
         BINV.DocBundle memory docs
     ) internal returns (uint256 invoiceId) {
-        vm.prank(servicer);
-        invoiceId = shelf.lockInvoice(sellerId, debtorId, face, nInstallments, firstMaturity, interval, terms, docs);
+        vm.startPrank(servicer);
+        invoiceId =
+            _lockInvoiceBound(shelf, sellerId, debtorId, face, nInstallments, firstMaturity, interval, terms, docs);
+        vm.stopPrank();
+    }
+
+    function _lockExplicitExpectRevert(
+        bytes memory expectedRevert,
+        uint256 sellerId,
+        uint256 debtorId,
+        uint128 face,
+        uint8 nInstallments,
+        uint64 firstMaturity,
+        uint32 interval,
+        ReceivableCommitment.FundingTerms memory terms,
+        BINV.DocBundle memory docs
+    ) internal {
+        _lockInvoiceBoundExpectRevert(
+            expectedRevert,
+            servicer,
+            shelf,
+            sellerId,
+            debtorId,
+            face,
+            nInstallments,
+            firstMaturity,
+            interval,
+            terms,
+            docs
+        );
+    }
+
+    function _lockExplicitExpectRevert(
+        bytes4 expectedRevert,
+        uint256 sellerId,
+        uint256 debtorId,
+        uint128 face,
+        uint8 nInstallments,
+        uint64 firstMaturity,
+        uint32 interval,
+        ReceivableCommitment.FundingTerms memory terms,
+        BINV.DocBundle memory docs
+    ) internal {
+        _lockInvoiceBoundExpectRevert(
+            expectedRevert,
+            servicer,
+            shelf,
+            sellerId,
+            debtorId,
+            face,
+            nInstallments,
+            firstMaturity,
+            interval,
+            terms,
+            docs
+        );
+    }
+
+    function _lockExplicitExpectAnyRevert(
+        uint256 sellerId,
+        uint256 debtorId,
+        uint128 face,
+        uint8 nInstallments,
+        uint64 firstMaturity,
+        uint32 interval,
+        ReceivableCommitment.FundingTerms memory terms,
+        BINV.DocBundle memory docs
+    ) internal {
+        _lockInvoiceBoundExpectAnyRevert(
+            servicer, shelf, sellerId, debtorId, face, nInstallments, firstMaturity, interval, terms, docs
+        );
     }
 
     function _invoiceState(uint256 id)
@@ -351,7 +421,8 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(thinVerifier, seller, debtor, address(usdc), FACE, 2, firstMaturity, 30 days);
         vm.startPrank(servicer);
-        uint256 invoiceId = thinShelf.lockInvoice(seller, debtor, FACE, 2, firstMaturity, 30 days, terms, _docs());
+        uint256 invoiceId =
+            _lockInvoiceBound(thinShelf, seller, debtor, FACE, 2, firstMaturity, 30 days, terms, _docs());
         vm.warp(block.timestamp + 30 days + Params.GRACE_STRONG + 1);
         thinShelf.markDefaulted(invoiceId);
         vm.stopPrank();
@@ -405,9 +476,19 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(verifier, seller, debtor, address(usdc), FACE, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        vm.expectRevert(abi.encodeWithSelector(InvoiceShelf.InsufficientTrancheLiquidity.selector, uint8(2)));
-        seniorOnlyShelf.lockInvoice(seller, debtor, FACE, 2, firstMaturity, 30 days, terms, _docs());
+        _lockInvoiceBoundExpectRevert(
+            abi.encodeWithSelector(InvoiceShelf.InsufficientTrancheLiquidity.selector, uint8(2)),
+            servicer,
+            seniorOnlyShelf,
+            seller,
+            debtor,
+            FACE,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
+        );
 
         assertEq(seniorOnlyShelf.totalLiquid(), 1_000_000e6, "senior cash cannot leak into junior origination");
         assertEq(seniorOnlyShelf.tranchePrincipal(0), 0);
@@ -442,8 +523,9 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         uint64 maturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(verifier, seller, debtor, address(usdc), FACE, 2, maturity, 30 days);
-        vm.prank(servicer);
-        uint256 id = recoveryShelf.lockInvoice(seller, debtor, FACE, 2, maturity, 30 days, terms, _docs());
+        vm.startPrank(servicer);
+        uint256 id = _lockInvoiceBound(recoveryShelf, seller, debtor, FACE, 2, maturity, 30 days, terms, _docs());
+        vm.stopPrank();
         assertEq(recoveryShelf.tranchePrincipal(0), 450e6, "pair-history advance selects Senior A");
 
         vm.warp(maturity + Params.GRACE_STRONG + 1);
@@ -479,9 +561,49 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
     function test_lockRejectsSelfDealingSellerAndDebtor() public {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms = _approvedTerms(seller, seller, FACE, 2, firstMaturity, 30 days);
+        _lockInvoiceBoundExpectRevert(
+            abi.encodeWithSelector(InvoiceShelf.SelfDealingReceivable.selector, seller),
+            servicer,
+            shelf,
+            seller,
+            seller,
+            FACE,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
+        );
+    }
+
+    function test_lockRejectsZeroExpectedCommitmentOnChain31337() public {
+        assertEq(block.chainid, 31_337, "test must exercise the local chain explicitly");
+        uint64 firstMaturity = uint64(block.timestamp + 30 days);
+        ReceivableCommitment.FundingTerms memory terms =
+            _approvedTerms(seller, debtor, 100e6, 2, firstMaturity, 30 days);
+        BINV.DocBundle memory docs = _docs();
+        bytes32 actualReceivableCommitment =
+            _previewReceivableCommitment(shelf, seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, docs);
+        assertNotEq(actualReceivableCommitment, bytes32(0));
+
+        uint256 nextInvoiceIdBefore = shelf.nextInvoiceId();
+        uint256 totalLiquidBefore = shelf.totalLiquid();
         vm.prank(servicer);
-        vm.expectRevert(abi.encodeWithSelector(InvoiceShelf.SelfDealingReceivable.selector, seller));
-        shelf.lockInvoice(seller, seller, FACE, 2, firstMaturity, 30 days, terms, _docs());
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                InvoiceShelf.ReceivableCommitmentMismatch.selector, bytes32(0), actualReceivableCommitment
+            )
+        );
+        _lockInvoiceWithExpectedCommitment(
+            shelf, seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, docs, bytes32(0)
+        );
+
+        assertEq(shelf.nextInvoiceId(), nextInvoiceIdBefore);
+        assertEq(shelf.totalLiquid(), totalLiquidBefore);
+        assertEq(shelf.totalPrincipal(), 0);
+        assertEq(shelf.outstandingOf(seller), 0);
+        assertEq(shelf.invoiceIdOfAuthorityInvoiceId(terms.authority.authorityInvoiceId), 0);
+        assertEq(shelf.invoiceIdOfReceivableCommitment(actualReceivableCommitment), 0);
     }
 
     function test_debtorPayerTracksCurrentWorkspaceOwner() public {
@@ -514,33 +636,53 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory exposureTerms =
             _approvedTerms(seller, debtor, 2000e6, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        vm.expectRevert();
-        shelf.lockInvoice(seller, debtor, 2000e6, 2, firstMaturity, 30 days, exposureTerms, _docs());
+        _lockInvoiceBoundExpectAnyRevert(
+            servicer, shelf, seller, debtor, 2000e6, 2, firstMaturity, 30 days, exposureTerms, _docs()
+        );
 
         // concentration cap: second invoice to the SAME debtor breaches 450
         _lock(seller, debtor, FACE); // 425 outstanding to this debtor
         ReceivableCommitment.FundingTerms memory concentrationTerms =
             _approvedTerms(seller, debtor, 100e6, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        vm.expectRevert(abi.encodeWithSelector(InvoiceShelf.ConcentrationCapExceeded.selector, debtor));
-        shelf.lockInvoice(seller, debtor, 100e6, 2, firstMaturity, 30 days, concentrationTerms, _docs());
+        _lockInvoiceBoundExpectRevert(
+            abi.encodeWithSelector(InvoiceShelf.ConcentrationCapExceeded.selector, debtor),
+            servicer,
+            shelf,
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            concentrationTerms,
+            _docs()
+        );
 
         // unKYB'd counterparty
         vm.prank(issuer);
         identity.setKybStatus(debtor, false);
         ReceivableCommitment.FundingTerms memory eligibilityTerms =
             _approvedTerms(seller, debtor, 100e6, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        vm.expectRevert(abi.encodeWithSelector(InvoiceShelf.NotEligible.selector, debtor));
-        shelf.lockInvoice(seller, debtor, 100e6, 2, firstMaturity, 30 days, eligibilityTerms, _docs());
+        _lockInvoiceBoundExpectRevert(
+            abi.encodeWithSelector(InvoiceShelf.NotEligible.selector, debtor),
+            servicer,
+            shelf,
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            eligibilityTerms,
+            _docs()
+        );
 
         // unauthorized caller
         ReceivableCommitment.FundingTerms memory unauthorizedTerms =
             _approvedTerms(seller, debtor, 100e6, 2, firstMaturity, 30 days);
-        vm.prank(lp);
-        vm.expectRevert();
-        shelf.lockInvoice(seller, debtor, 100e6, 2, firstMaturity, 30 days, unauthorizedTerms, _docs());
+        _lockInvoiceBoundExpectAnyRevert(
+            lp, shelf, seller, debtor, 100e6, 2, firstMaturity, 30 days, unauthorizedTerms, _docs()
+        );
     }
 
     function test_fundingEvidenceStoresSeparatePermanentBindingsAndRejectsUnknown() public {
@@ -572,36 +714,64 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         ReceivableCommitment.FundingTerms memory terms = _fundingTerms(_nextAuthorityInvoiceId());
 
         terms.authority.schemaVersion = 0;
-        vm.expectRevert(
+        _lockExplicitExpectRevert(
             abi.encodeWithSelector(
                 InvoiceShelf.UnsupportedAuthoritySchema.selector, uint16(0), ReceivableCommitment.VERSION
-            )
+            ),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
         );
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
 
         terms = _fundingTerms(_nextAuthorityInvoiceId());
         terms.authority.schemaVersion = 2;
-        vm.expectRevert(
+        _lockExplicitExpectRevert(
             abi.encodeWithSelector(
                 InvoiceShelf.UnsupportedAuthoritySchema.selector, uint16(2), ReceivableCommitment.VERSION
-            )
+            ),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
         );
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
 
         terms = _fundingTerms(_nextAuthorityInvoiceId());
         terms.authority.verifierConfigId = bytes32(0);
-        vm.expectRevert(
-            abi.encodeWithSelector(InvoiceShelf.VerifierConfigMismatch.selector, bytes32(0), TEST_VERIFIER_CONFIG_ID)
+        _lockExplicitExpectRevert(
+            abi.encodeWithSelector(InvoiceShelf.VerifierConfigMismatch.selector, bytes32(0), TEST_VERIFIER_CONFIG_ID),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
         );
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
 
         terms = _fundingTerms(_nextAuthorityInvoiceId());
         bytes32 wrongConfig = keccak256("wrong verifier config");
         terms.authority.verifierConfigId = wrongConfig;
-        vm.expectRevert(
-            abi.encodeWithSelector(InvoiceShelf.VerifierConfigMismatch.selector, wrongConfig, TEST_VERIFIER_CONFIG_ID)
+        _lockExplicitExpectRevert(
+            abi.encodeWithSelector(InvoiceShelf.VerifierConfigMismatch.selector, wrongConfig, TEST_VERIFIER_CONFIG_ID),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
         );
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
     }
 
     function test_onlyFacturaEVoucherType19CanOriginateEvenWhenVerifierApproves() public {
@@ -611,10 +781,17 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
             ReceivableCommitment.FundingTerms memory terms = _fundingTerms(_nextAuthorityInvoiceId());
             terms.authority.authorityVoucherType = rejectedTypes[i];
             _approveFunding(authorityVerifier, terms, seller, debtor, address(usdc), 100e6, 2, firstMaturity, 30 days);
-            vm.expectRevert(
-                abi.encodeWithSelector(InvoiceShelf.UnsupportedAuthorityVoucherType.selector, rejectedTypes[i])
+            _lockExplicitExpectRevert(
+                abi.encodeWithSelector(InvoiceShelf.UnsupportedAuthorityVoucherType.selector, rejectedTypes[i]),
+                seller,
+                debtor,
+                100e6,
+                2,
+                firstMaturity,
+                30 days,
+                terms,
+                _docs()
             );
-            _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
         }
     }
 
@@ -630,8 +807,17 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
             if (fieldIndex == 2) docs.paymentInstructionHash = bytes32(0);
             if (fieldIndex == 3) docs.servicingPolicyHash = bytes32(0);
             if (fieldIndex == 4) docs.disputePolicyHash = bytes32(0);
-            vm.expectRevert(abi.encodeWithSelector(InvoiceShelf.MissingRequiredDocumentHash.selector, fieldIndex));
-            _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, docs);
+            _lockExplicitExpectRevert(
+                abi.encodeWithSelector(InvoiceShelf.MissingRequiredDocumentHash.selector, fieldIndex),
+                seller,
+                debtor,
+                100e6,
+                2,
+                firstMaturity,
+                30 days,
+                terms,
+                docs
+            );
         }
         assertEq(shelf.invoiceIdOfAuthorityInvoiceId(terms.authority.authorityInvoiceId), 0);
     }
@@ -642,8 +828,17 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         ReceivableCommitment.FundingTerms memory terms = _fundingTerms(_nextAuthorityInvoiceId());
         terms.recourse = false;
         _approveFunding(authorityVerifier, terms, seller, debtor, address(usdc), 100e6, 2, firstMaturity, 30 days);
-        vm.expectRevert(InvoiceShelf.NonRecourseNotEnabled.selector);
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
+        _lockExplicitExpectRevert(
+            InvoiceShelf.NonRecourseNotEnabled.selector,
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
+        );
     }
 
     function test_invalidAndFutureAuthorityDatesFailBeforeVerification() public {
@@ -652,36 +847,57 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
 
         terms.authority.issuedAt = uint64(block.timestamp + 1);
         terms.authority.authorityPaymentDueAt = uint64(block.timestamp + 90 days);
-        vm.expectRevert(
+        _lockExplicitExpectRevert(
             abi.encodeWithSelector(
                 InvoiceShelf.InvalidAuthorityDates.selector,
                 terms.authority.issuedAt,
                 terms.authority.authorityPaymentDueAt
-            )
+            ),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
         );
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
 
         terms = _fundingTerms(_nextAuthorityInvoiceId());
         terms.authority.authorityPaymentDueAt = terms.authority.issuedAt - 1;
-        vm.expectRevert(
+        _lockExplicitExpectRevert(
             abi.encodeWithSelector(
                 InvoiceShelf.InvalidAuthorityDates.selector,
                 terms.authority.issuedAt,
                 terms.authority.authorityPaymentDueAt
-            )
+            ),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
         );
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
     }
 
     function test_falseAndRevokedVerifierResultsFailWithoutConsumption() public {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory falseTerms = _fundingTerms(_nextAuthorityInvoiceId());
-        vm.expectRevert(
+        _lockExplicitExpectRevert(
             abi.encodeWithSelector(
                 InvoiceShelf.AuthorityInvoiceNotVerified.selector, falseTerms.authority.authorityInvoiceId
-            )
+            ),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            falseTerms,
+            _docs()
         );
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, falseTerms, _docs());
         assertEq(shelf.invoiceIdOfAuthorityInvoiceId(falseTerms.authority.authorityInvoiceId), 0);
 
         ReceivableCommitment.FundingTerms memory revokedTerms = _fundingTerms(_nextAuthorityInvoiceId());
@@ -689,12 +905,19 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
             authorityVerifier, revokedTerms, seller, debtor, address(usdc), 100e6, 2, firstMaturity, 30 days
         );
         authorityVerifier.setRevoked(revokedTerms.authority.authorityInvoiceId, true);
-        vm.expectRevert(
+        _lockExplicitExpectRevert(
             abi.encodeWithSelector(
                 InvoiceShelf.AuthorityInvoiceNotVerified.selector, revokedTerms.authority.authorityInvoiceId
-            )
+            ),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            revokedTerms,
+            _docs()
         );
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, revokedTerms, _docs());
         assertEq(shelf.invoiceIdOfAuthorityInvoiceId(revokedTerms.authority.authorityInvoiceId), 0);
     }
 
@@ -704,10 +927,17 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
             _approvedTerms(seller, debtor, 100e6, 2, firstMaturity, 30 days);
         bytes32 drifted = keccak256("drifted config");
         authorityVerifier.setVerifierConfigId(drifted);
-        vm.expectRevert(
-            abi.encodeWithSelector(InvoiceShelf.VerifierConfigMismatch.selector, drifted, TEST_VERIFIER_CONFIG_ID)
+        _lockExplicitExpectRevert(
+            abi.encodeWithSelector(InvoiceShelf.VerifierConfigMismatch.selector, drifted, TEST_VERIFIER_CONFIG_ID),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
         );
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
         assertEq(shelf.nextInvoiceId(), 1);
     }
 
@@ -716,12 +946,19 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         ReceivableCommitment.FundingTerms memory terms =
             _approvedTerms(seller, debtor, 100e6, 2, firstMaturity, 30 days);
         authorityVerifier.setSupportedSchemaVersion(2);
-        vm.expectRevert(
+        _lockExplicitExpectRevert(
             abi.encodeWithSelector(
                 InvoiceShelf.UnsupportedAuthoritySchema.selector, uint16(2), ReceivableCommitment.VERSION
-            )
+            ),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
         );
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
         assertEq(shelf.nextInvoiceId(), 1);
     }
 
@@ -731,8 +968,17 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
             _approvedTerms(seller, debtor, 100e6, 2, firstMaturity, 30 days);
         address drifted = makeAddr("driftedShelf");
         authorityVerifier.setApprovedShelf(drifted);
-        vm.expectRevert(abi.encodeWithSelector(InvoiceShelf.VerifierShelfMismatch.selector, drifted, address(shelf)));
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
+        _lockExplicitExpectRevert(
+            abi.encodeWithSelector(InvoiceShelf.VerifierShelfMismatch.selector, drifted, address(shelf)),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
+        );
         assertEq(shelf.nextInvoiceId(), 1);
     }
 
@@ -742,8 +988,17 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
             _approvedTerms(seller, debtor, 100e6, 2, firstMaturity, 30 days);
         uint256 drifted = block.chainid + 1;
         authorityVerifier.setApprovedChainId(drifted);
-        vm.expectRevert(abi.encodeWithSelector(InvoiceShelf.WrongVerifierChain.selector, drifted, block.chainid));
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
+        _lockExplicitExpectRevert(
+            abi.encodeWithSelector(InvoiceShelf.WrongVerifierChain.selector, drifted, block.chainid),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
+        );
         assertEq(shelf.nextInvoiceId(), 1);
     }
 
@@ -757,10 +1012,20 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         uint256 sellerBalanceBefore = usdc.balanceOf(sellerOwner);
 
         vm.chainId(driftedChainId);
-        vm.prank(servicer);
         vm.record();
-        vm.expectRevert(abi.encodeWithSelector(InvoiceShelf.WrongVerifierChain.selector, driftedChainId, pinnedChainId));
-        shelf.lockInvoice(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
+        _lockInvoiceBoundExpectRevert(
+            abi.encodeWithSelector(InvoiceShelf.WrongVerifierChain.selector, driftedChainId, pinnedChainId),
+            servicer,
+            shelf,
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
+        );
 
         (bytes32[] memory verifierReads, bytes32[] memory verifierWrites) = vm.accesses(address(authorityVerifier));
         assertEq(verifierReads.length, 0, "current-chain drift reached verifier storage");
@@ -778,15 +1043,22 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
             _approvedTerms(seller, debtor, 100e6, 2, firstMaturity, 30 days);
         vm.etch(address(authorityVerifier), hex"00");
         bytes32 receivedCodehash = address(authorityVerifier).codehash;
-        vm.expectRevert(
+        _lockExplicitExpectRevert(
             abi.encodeWithSelector(
                 InvoiceShelf.VerifierDeploymentMismatch.selector,
                 address(authorityVerifier),
                 receivedCodehash,
                 shelf.AUTHORITY_VERIFIER_CODEHASH()
-            )
+            ),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
         );
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
         assertEq(shelf.nextInvoiceId(), 1);
     }
 
@@ -1000,10 +1272,19 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         _approveFunding(authorityVerifier, changedTerms, seller, debtor, address(usdc), FACE, 2, firstMaturity, 30 days);
         BINV.DocBundle memory changedDocs = _docs();
         changedDocs.invoiceDocHash = keccak256("post-settlement changed PDF");
-        vm.expectRevert(
-            abi.encodeWithSelector(InvoiceShelf.AuthorityInvoiceAlreadyConsumed.selector, authorityInvoiceId, invoiceId)
+        _lockExplicitExpectRevert(
+            abi.encodeWithSelector(
+                InvoiceShelf.AuthorityInvoiceAlreadyConsumed.selector, authorityInvoiceId, invoiceId
+            ),
+            seller,
+            debtor,
+            FACE,
+            2,
+            firstMaturity,
+            30 days,
+            changedTerms,
+            changedDocs
         );
-        _lockExplicit(seller, debtor, FACE, 2, firstMaturity, 30 days, changedTerms, changedDocs);
     }
 
     function test_duplicateAuthorityRemainsConsumedAfterDefaultAndBinvBurn() public {
@@ -1032,10 +1313,19 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         _approveFunding(
             authorityVerifier, changedTerms, seller, debtor, address(usdc), 100e6, 2, firstMaturity, 30 days
         );
-        vm.expectRevert(
-            abi.encodeWithSelector(InvoiceShelf.AuthorityInvoiceAlreadyConsumed.selector, authorityInvoiceId, invoiceId)
+        _lockExplicitExpectRevert(
+            abi.encodeWithSelector(
+                InvoiceShelf.AuthorityInvoiceAlreadyConsumed.selector, authorityInvoiceId, invoiceId
+            ),
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            changedTerms,
+            _docs()
         );
-        _lockExplicit(seller, debtor, 100e6, 2, firstMaturity, 30 days, changedTerms, _docs());
     }
 
     function test_safeMintFailureRollsBackAuthorityConsumptionAndAccounting() public {
@@ -1049,8 +1339,7 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         );
         uint256 liquidBefore = shelf.totalLiquid();
 
-        vm.expectRevert();
-        _lockExplicit(rejectingSeller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
+        _lockExplicitExpectAnyRevert(rejectingSeller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
 
         assertEq(shelf.nextInvoiceId(), 1);
         assertEq(shelf.invoiceIdOfAuthorityInvoiceId(authorityInvoiceId), 0);
@@ -1082,9 +1371,19 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         );
         failingUsdc.rejectTransfersTo(sellerOwner, true);
 
-        vm.prank(servicer);
-        vm.expectRevert(abi.encodeWithSignature("Error(string)", "TRANSFER_REJECTED"));
-        failingShelf.lockInvoice(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
+        _lockInvoiceBoundExpectRevert(
+            abi.encodeWithSignature("Error(string)", "TRANSFER_REJECTED"),
+            servicer,
+            failingShelf,
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
+        );
 
         assertEq(failingShelf.nextInvoiceId(), 1);
         assertEq(failingShelf.invoiceIdOfAuthorityInvoiceId(authorityInvoiceId), 0);
@@ -1345,9 +1644,19 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
     function test_faceSmallerThanInstallmentCountIsRejectedAtLock() public {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms = _approvedTerms(seller, debtor, 2, 3, firstMaturity, 30 days);
-        vm.prank(servicer);
-        vm.expectRevert(InvoiceShelf.BadSchedule.selector);
-        shelf.lockInvoice(seller, debtor, 2, 3, firstMaturity, 30 days, terms, _docs());
+        _lockInvoiceBoundExpectRevert(
+            InvoiceShelf.BadSchedule.selector,
+            servicer,
+            shelf,
+            seller,
+            debtor,
+            2,
+            3,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
+        );
     }
 
     function test_installmentAmountRejectsUnknownInvoiceAndOutOfRangeIndex() public {
@@ -1512,9 +1821,19 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms =
             _approvedTerms(seller, debtor, 100e6, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        vm.expectRevert(abi.encodeWithSelector(InvoiceShelf.Frozen.selector, seller));
-        shelf.lockInvoice(seller, debtor, 100e6, 2, firstMaturity, 30 days, terms, _docs());
+        _lockInvoiceBoundExpectRevert(
+            abi.encodeWithSelector(InvoiceShelf.Frozen.selector, seller),
+            servicer,
+            shelf,
+            seller,
+            debtor,
+            100e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
+        );
     }
 
     function test_markDefaulted_revertsBeforeGrace() public {
@@ -1538,13 +1857,21 @@ contract InvoiceShelfTest is StrictAuthorityFixture {
 
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms = _approvedTerms(seller, d4, FACE, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        vm.expectRevert(
+        _lockInvoiceBoundExpectRevert(
             abi.encodeWithSelector(
                 InvoiceShelf.ExposureCapExceeded.selector, seller, ADVANCE, Params.L0_USDC - 3 * uint256(ADVANCE)
-            )
+            ),
+            servicer,
+            shelf,
+            seller,
+            d4,
+            FACE,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
         );
-        shelf.lockInvoice(seller, d4, FACE, 2, firstMaturity, 30 days, terms, _docs());
     }
 
     // ── I3: solvency — shelf USDC covers tranche liquidity + collected holdbacks ──

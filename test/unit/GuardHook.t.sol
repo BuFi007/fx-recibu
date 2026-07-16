@@ -105,8 +105,9 @@ contract GuardHookTest is StrictAuthorityFixture {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(authorityVerifier, seller, debtor, address(usdc), 500e6, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        invId = shelf.lockInvoice(seller, debtor, 500e6, 2, firstMaturity, 30 days, terms, _docs());
+        vm.startPrank(servicer);
+        invId = _lockInvoiceBound(shelf, seller, debtor, 500e6, 2, firstMaturity, 30 days, terms, _docs());
+        vm.stopPrank();
 
         feed.set(1e18, block.timestamp); // fresh, parity
     }
@@ -414,8 +415,9 @@ contract GuardHookTest is StrictAuthorityFixture {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(authorityVerifier, seller, debtor2, address(usdc), 100e6, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        uint256 inv2 = shelf.lockInvoice(seller, debtor2, 100e6, 2, firstMaturity, 30 days, terms, _docs());
+        vm.startPrank(servicer);
+        uint256 inv2 = _lockInvoiceBound(shelf, seller, debtor2, 100e6, 2, firstMaturity, 30 days, terms, _docs());
+        vm.stopPrank();
         vm.warp(block.timestamp + 30 days + Params.GRACE_STRONG + 1);
         vm.prank(servicer);
         shelf.markDefaulted(inv2);
