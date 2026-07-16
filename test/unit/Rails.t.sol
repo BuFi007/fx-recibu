@@ -91,8 +91,9 @@ contract RailsTest is StrictAuthorityFixture {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(authorityVerifier, seller, debtor, address(usdc), FACE, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        invId = shelf.lockInvoice(seller, debtor, FACE, 2, firstMaturity, 30 days, terms, _docs());
+        vm.startPrank(servicer);
+        invId = _lockInvoiceBound(shelf, seller, debtor, FACE, 2, firstMaturity, 30 days, terms, _docs());
+        vm.stopPrank();
 
         usdc.mint(debtorPayer, 1_000_000e6);
         vm.prank(debtorPayer);

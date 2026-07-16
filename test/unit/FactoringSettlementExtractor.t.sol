@@ -24,6 +24,7 @@ import {IInvoiceShelf} from "../../src/interfaces/IInvoiceShelf.sol";
 import {IReceiver} from "../../src/interfaces/IReceiver.sol";
 import {IAuthorityInvoiceVerifier} from "../../src/interfaces/IAuthorityInvoiceVerifier.sol";
 import {ReceivableCommitment} from "../../src/libraries/ReceivableCommitment.sol";
+import {Params} from "../../src/libraries/Params.sol";
 import {StrictAuthorityFixture, StrictAuthorityInvoiceVerifier} from "../utils/StrictAuthorityInvoiceVerifier.sol";
 
 contract ExtractorUSDC is ERC20 {
@@ -119,8 +120,9 @@ contract FactoringSettlementExtractorTest is StrictAuthorityFixture {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(authorityVerifier, seller, debtor, address(usdc), FACE, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        invoiceId = shelf.lockInvoice(seller, debtor, FACE, 2, firstMaturity, 30 days, terms, _docs());
+        vm.startPrank(servicer);
+        invoiceId = _lockInvoiceBound(shelf, seller, debtor, FACE, 2, firstMaturity, 30 days, terms, _docs());
+        vm.stopPrank();
 
         usdc.mint(payer, 1_000_000e6);
         vm.prank(payer);
@@ -508,11 +510,11 @@ contract FactoringSettlementExtractorTest is StrictAuthorityFixture {
     }
 
     function test_lockActionPayloadV1AndShelfSelector() public {
-        bytes4 expectedSelector = 0xb8a01dfd;
+        bytes4 expectedSelector = 0x0743c3df;
         bytes4 independentlyComputed = bytes4(
             keccak256(
                 bytes(
-                    "lockInvoice(uint256,uint256,uint128,uint8,uint64,uint32,((uint16,bytes32,bytes32,bytes32,uint8,uint64,uint64),bool),(bytes32,bytes32,bytes32,bytes32,bytes32))"
+                    "lockInvoice(uint256,uint256,uint128,uint8,uint64,uint32,((uint16,bytes32,bytes32,bytes32,uint8,uint64,uint64),bool),(bytes32,bytes32,bytes32,bytes32,bytes32),bytes32)"
                 )
             )
         );
@@ -523,11 +525,23 @@ contract FactoringSettlementExtractorTest is StrictAuthorityFixture {
         BINV.DocBundle memory docs = _lockDocs();
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(authorityVerifier, seller, debtor, address(usdc), LOCK_FACE, 2, firstMaturity, 30 days);
+        bytes32 expectedCommitment = shelf.previewReceivableCommitment(
+            seller, debtor, LOCK_FACE, 2, firstMaturity, 30 days, terms, docs.assignmentHash
+        );
 
         vm.expectCall(
             address(shelf),
             abi.encodeWithSelector(
-                expectedSelector, seller, debtor, LOCK_FACE, uint8(2), firstMaturity, uint32(30 days), terms, docs
+                expectedSelector,
+                seller,
+                debtor,
+                LOCK_FACE,
+                uint8(2),
+                firstMaturity,
+                uint32(30 days),
+                terms,
+                docs,
+                expectedCommitment
             )
         );
         _callOnReport(
@@ -535,6 +549,47 @@ contract FactoringSettlementExtractorTest is StrictAuthorityFixture {
             _lockInnerWithTerms(operationId, address(usdc), seller, debtor, 2, firstMaturity, terms, docs)
         );
         assertTrue(extractor.processed(operationId));
+    }
+
+    function test_lockRejectsStaleExpectedCommitmentBeforeAnyMutation() public {
+        bytes32 operationId = keccak256("stale-global-receivable-commitment");
+        uint64 firstMaturity = uint64(block.timestamp + 60 days);
+        BINV.DocBundle memory docs = _lockDocs();
+        ReceivableCommitment.FundingTerms memory terms =
+            _newApprovedTerms(authorityVerifier, seller, debtor, address(usdc), LOCK_FACE, 2, firstMaturity, 30 days);
+        bytes32 approvedCommitment = shelf.previewReceivableCommitment(
+            seller, debtor, LOCK_FACE, 2, firstMaturity, 30 days, terms, docs.assignmentHash
+        );
+
+        vm.prank(attestor);
+        reputation.setScore(debtor, 74, 74, 2, keccak256("new-live-debtor-score"));
+        bytes32 actualCommitment = shelf.previewReceivableCommitment(
+            seller, debtor, LOCK_FACE, 2, firstMaturity, 30 days, terms, docs.assignmentHash
+        );
+        assertNotEq(actualCommitment, approvedCommitment);
+
+        uint256 nextInvoiceBefore = shelf.nextInvoiceId();
+        uint256 balanceBefore = usdc.balanceOf(sellerOwner);
+        uint256 epoch = block.timestamp / Params.EPOCH_LENGTH;
+        uint256 velocityBefore = shelf.advancesInEpoch(seller, epoch);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                InvoiceShelf.ReceivableCommitmentMismatch.selector, approvedCommitment, actualCommitment
+            )
+        );
+        _callOnReport(
+            address(shelf),
+            _lockInnerWithExpectedCommitment(
+                operationId, address(usdc), seller, debtor, 2, firstMaturity, terms, docs, approvedCommitment
+            )
+        );
+
+        assertFalse(extractor.processed(operationId));
+        assertEq(shelf.nextInvoiceId(), nextInvoiceBefore);
+        assertEq(usdc.balanceOf(sellerOwner), balanceBefore);
+        assertEq(shelf.advancesInEpoch(seller, epoch), velocityBefore);
+        assertEq(shelf.invoiceIdOfReceivableCommitment(approvedCommitment), 0);
+        assertEq(shelf.invoiceIdOfReceivableCommitment(actualCommitment), 0);
     }
 
     function test_sameAuthorityDifferentOperationRejectedAndRetrySafe() public {
@@ -566,6 +621,9 @@ contract FactoringSettlementExtractorTest is StrictAuthorityFixture {
             authorityVerifier, changedTerms, seller, debtor, address(usdc), LOCK_FACE, 2, firstMaturity, 30 days
         );
         bytes32 secondOperation = keccak256("authority-operation-b");
+        bytes memory secondInner = _lockInnerWithTerms(
+            secondOperation, address(usdc), seller, debtor, 2, firstMaturity, changedTerms, changedDocs
+        );
 
         vm.expectCall(
             address(authorityVerifier),
@@ -589,12 +647,7 @@ contract FactoringSettlementExtractorTest is StrictAuthorityFixture {
                 InvoiceShelf.AuthorityInvoiceAlreadyConsumed.selector, authorityInvoiceId, originalInvoiceId
             )
         );
-        _callOnReport(
-            address(shelf),
-            _lockInnerWithTerms(
-                secondOperation, address(usdc), seller, debtor, 2, firstMaturity, changedTerms, changedDocs
-            )
-        );
+        _callOnReport(address(shelf), secondInner);
 
         assertFalse(extractor.processed(secondOperation));
         assertEq(shelf.nextInvoiceId(), nextInvoiceBefore);
@@ -994,8 +1047,44 @@ contract FactoringSettlementExtractorTest is StrictAuthorityFixture {
         ReceivableCommitment.FundingTerms memory terms,
         BINV.DocBundle memory docs
     ) internal view returns (bytes memory) {
+        bytes32 expectedCommitment = shelf.previewReceivableCommitment(
+            sellerAgentId, debtorAgentId, LOCK_FACE, nInstallments, firstMaturity, 30 days, terms, docs.assignmentHash
+        );
+        return _lockInnerWithExpectedCommitment(
+            operationId,
+            token,
+            sellerAgentId,
+            debtorAgentId,
+            nInstallments,
+            firstMaturity,
+            terms,
+            docs,
+            expectedCommitment
+        );
+    }
+
+    function _lockInnerWithExpectedCommitment(
+        bytes32 operationId,
+        address token,
+        uint256 sellerAgentId,
+        uint256 debtorAgentId,
+        uint8 nInstallments,
+        uint64 firstMaturity,
+        ReceivableCommitment.FundingTerms memory terms,
+        BINV.DocBundle memory docs,
+        bytes32 expectedCommitment
+    ) internal view returns (bytes memory) {
         bytes memory payload = abi.encode(
-            token, sellerAgentId, debtorAgentId, LOCK_FACE, nInstallments, firstMaturity, uint32(30 days), terms, docs
+            token,
+            sellerAgentId,
+            debtorAgentId,
+            LOCK_FACE,
+            nInstallments,
+            firstMaturity,
+            uint32(30 days),
+            terms,
+            docs,
+            expectedCommitment
         );
         return _inner(uint8(2), ARC_CHAIN_SELECTOR, operationId, _deadline(), payload);
     }

@@ -107,8 +107,9 @@ contract OracleAndReserveTest is StrictAuthorityFixture {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(authorityVerifier, seller, debtor, address(usdc), 500e6, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        id = shelf.lockInvoice(seller, debtor, 500e6, 2, firstMaturity, 30 days, terms, _docs());
+        vm.startPrank(servicer);
+        id = _lockInvoiceBound(shelf, seller, debtor, 500e6, 2, firstMaturity, 30 days, terms, _docs());
+        vm.stopPrank();
         vm.warp(firstMaturity);
         vm.prank(servicer);
         shelf.applyPayment(id, 250e6); // installment 1 on time; outstanding 175
@@ -163,8 +164,9 @@ contract OracleAndReserveTest is StrictAuthorityFixture {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(verifier2, seller, debtor, address(usdc), 500e6, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        uint256 id = shelf2.lockInvoice(seller, debtor, 500e6, 2, firstMaturity, 30 days, terms, _docs());
+        vm.startPrank(servicer);
+        uint256 id = _lockInvoiceBound(shelf2, seller, debtor, 500e6, 2, firstMaturity, 30 days, terms, _docs());
+        vm.stopPrank();
         vm.prank(servicer);
         shelf2.applyPayment(id, 250e6);
         vm.warp(block.timestamp + 60 days + Params.GRACE_STRONG + 1);
@@ -207,9 +209,19 @@ contract OracleAndReserveTest is StrictAuthorityFixture {
         uint64 firstMaturity = uint64(block.timestamp + 30 days);
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(authorityVerifier, weakSeller, debtor, address(usdc), 400e6, 2, firstMaturity, 30 days);
-        vm.prank(servicer);
-        vm.expectRevert(abi.encodeWithSelector(InvoiceShelf.BondNotPosted.selector, 85e6, 0));
-        shelf.lockInvoice(weakSeller, debtor, 400e6, 2, firstMaturity, 30 days, terms, _docs());
+        _lockInvoiceBoundExpectRevert(
+            abi.encodeWithSelector(InvoiceShelf.BondNotPosted.selector, 85e6, 0),
+            servicer,
+            shelf,
+            weakSeller,
+            debtor,
+            400e6,
+            2,
+            firstMaturity,
+            30 days,
+            terms,
+            _docs()
+        );
 
         // post the bond → lock succeeds
         usdc.mint(weakOwner, 100e6);
@@ -217,8 +229,9 @@ contract OracleAndReserveTest is StrictAuthorityFixture {
         usdc.approve(address(reserve), type(uint256).max);
         reserve.postBond(weakSeller, 85e6);
         vm.stopPrank();
-        vm.prank(servicer);
-        shelf.lockInvoice(weakSeller, debtor, 400e6, 2, firstMaturity, 30 days, terms, _docs());
+        vm.startPrank(servicer);
+        _lockInvoiceBound(shelf, weakSeller, debtor, 400e6, 2, firstMaturity, 30 days, terms, _docs());
+        vm.stopPrank();
         assertEq(reserve.requiredOf(weakSeller), 85e6);
     }
 
@@ -325,9 +338,10 @@ contract OracleAndReserveTest is StrictAuthorityFixture {
         );
 
         vm.startPrank(servicer);
-        uint256 defaultId = shelf.lockInvoice(seller, debtor, 500e6, 2, defaultMaturity, 30 days, defaultTerms, _docs());
+        uint256 defaultId =
+            _lockInvoiceBound(shelf, seller, debtor, 500e6, 2, defaultMaturity, 30 days, defaultTerms, _docs());
         uint256 payingId =
-            shelf.lockInvoice(seller, payingDebtor, 500e6, 2, payingMaturity, 30 days, payingTerms, _docs());
+            _lockInvoiceBound(shelf, seller, payingDebtor, 500e6, 2, payingMaturity, 30 days, payingTerms, _docs());
         vm.stopPrank();
 
         vm.warp(defaultMaturity + Params.GRACE_STRONG + 1);
@@ -391,9 +405,10 @@ contract OracleAndReserveTest is StrictAuthorityFixture {
             _newApprovedTerms(authorityVerifier, seller, secondDebtor, address(usdc), 500e6, 2, firstMaturity, 30 days);
 
         vm.startPrank(servicer);
-        uint256 firstId = shelf.lockInvoice(seller, debtor, 500e6, 2, firstMaturity, 30 days, firstTerms, _docs());
+        uint256 firstId =
+            _lockInvoiceBound(shelf, seller, debtor, 500e6, 2, firstMaturity, 30 days, firstTerms, _docs());
         uint256 secondId =
-            shelf.lockInvoice(seller, secondDebtor, 500e6, 2, firstMaturity, 30 days, secondTerms, _docs());
+            _lockInvoiceBound(shelf, seller, secondDebtor, 500e6, 2, firstMaturity, 30 days, secondTerms, _docs());
         shelf.applyPayment(firstId, 250e6);
         shelf.applyPayment(secondId, 250e6);
         vm.stopPrank();
@@ -436,7 +451,7 @@ contract OracleAndReserveTest is StrictAuthorityFixture {
         ReceivableCommitment.FundingTerms memory terms =
             _newApprovedTerms(authorityVerifier, seller, debtor, address(usdc), 500e6, 2, firstMaturity, 30 days);
         vm.startPrank(servicer);
-        uint256 id = shelf.lockInvoice(seller, debtor, 500e6, 2, firstMaturity, 30 days, terms, _docs());
+        uint256 id = _lockInvoiceBound(shelf, seller, debtor, 500e6, 2, firstMaturity, 30 days, terms, _docs());
         shelf.applyPayment(id, 450e6); // advance repaid; 25 holdback collected; final installment still partial
         vm.stopPrank();
 
@@ -471,9 +486,10 @@ contract OracleAndReserveTest is StrictAuthorityFixture {
             _newApprovedTerms(authorityVerifier, seller, payingDebtor, address(usdc), 500e6, 2, firstMaturity, 30 days);
 
         vm.startPrank(servicer);
-        uint256 defaultId = shelf.lockInvoice(seller, debtor, 500e6, 2, firstMaturity, 30 days, defaultTerms, _docs());
+        uint256 defaultId =
+            _lockInvoiceBound(shelf, seller, debtor, 500e6, 2, firstMaturity, 30 days, defaultTerms, _docs());
         uint256 payingId =
-            shelf.lockInvoice(seller, payingDebtor, 500e6, 2, firstMaturity, 30 days, payingTerms, _docs());
+            _lockInvoiceBound(shelf, seller, payingDebtor, 500e6, 2, firstMaturity, 30 days, payingTerms, _docs());
         shelf.applyPayment(defaultId, 400e6); // leaves 25 outstanding and no collected holdback
         vm.stopPrank();
 
@@ -513,9 +529,10 @@ contract OracleAndReserveTest is StrictAuthorityFixture {
             _newApprovedTerms(authorityVerifier, seller, payingDebtor, address(usdc), 500e6, 2, firstMaturity, 30 days);
 
         vm.startPrank(servicer);
-        uint256 defaultId = shelf.lockInvoice(seller, debtor, 500e6, 2, firstMaturity, 30 days, defaultTerms, _docs());
+        uint256 defaultId =
+            _lockInvoiceBound(shelf, seller, debtor, 500e6, 2, firstMaturity, 30 days, defaultTerms, _docs());
         uint256 payingId =
-            shelf.lockInvoice(seller, payingDebtor, 500e6, 2, firstMaturity, 30 days, payingTerms, _docs());
+            _lockInvoiceBound(shelf, seller, payingDebtor, 500e6, 2, firstMaturity, 30 days, payingTerms, _docs());
         shelf.applyPayment(defaultId, 400e6); // 25 of principal remains at default
         vm.stopPrank();
 

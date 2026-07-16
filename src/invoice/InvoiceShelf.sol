@@ -80,6 +80,22 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard, IReceivableDomainView {
         Status status;
     }
 
+    /// @dev One transaction-local projection of every live policy value that
+    ///      participates in the canonical receivable commitment. Keeping the
+    ///      projection together makes the preview and mutation paths share the
+    ///      exact same field derivation.
+    struct OriginationProjection {
+        bool pairHistory;
+        uint8 sellerScore;
+        uint8 debtorScore;
+        uint16 advanceRateBps;
+        uint128 advance;
+        uint128 holdback;
+        uint8 tranche;
+        uint32 grace;
+        bytes32 receivableCommitment;
+    }
+
     IERC20 public immutable USDC;
     IBUFIIdentityRegistry public immutable IDENTITY;
     IBUFIReputationRegistry public immutable REPUTATION;
@@ -220,6 +236,7 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard, IReceivableDomainView {
     error AuthorityInvoiceNotVerified(bytes32 authorityInvoiceId);
     error AuthorityInvoiceAlreadyConsumed(bytes32 authorityInvoiceId, uint256 originalInvoiceId);
     error ReceivableCommitmentAlreadyConsumed(bytes32 commitment, uint256 originalInvoiceId);
+    error ReceivableCommitmentMismatch(bytes32 expected, bytes32 actual);
     error InvalidAuthorityDates(uint64 issuedAt, uint64 authorityPaymentDueAt);
     error MissingRequiredDocumentHash(uint8 fieldIndex);
     error NonRecourseNotEnabled();
@@ -411,7 +428,8 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard, IReceivableDomainView {
         uint64 firstMaturity,
         uint32 interval,
         ReceivableCommitment.FundingTerms calldata terms,
-        BINV.DocBundle calldata docs
+        BINV.DocBundle calldata docs,
+        bytes32 expectedReceivableCommitment
     ) external onlyRole(SERVICER_ROLE) nonReentrant returns (uint256 invoiceId) {
         if (sellerAgentId == debtorAgentId) revert SelfDealingReceivable(sellerAgentId);
         _validateAuthorityFunding(
@@ -432,48 +450,27 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard, IReceivableDomainView {
                 || uint256(face) < nInstallments
         ) revert BadSchedule();
 
-        bool pair = TIERS.hasPairHistory(sellerAgentId, debtorAgentId);
-        IBUFIReputationRegistry.ScoreSnapshot memory sellerS = REPUTATION.scoreOf(sellerAgentId);
-        IBUFIReputationRegistry.ScoreSnapshot memory debtorS = REPUTATION.scoreOf(debtorAgentId);
-
-        uint16 advanceRateBps = TIERS.advanceRateBps(debtorS.debtorScore, pair);
-        uint128 advance = uint128((uint256(face) * advanceRateBps) / Params.BPS);
-        uint128 holdback = face - advance;
-        uint8 tranche = uint8(TIERS.trancheEligibility(sellerS.sellerScore, debtorS.debtorScore, pair));
-        uint32 grace = TIERS.tierOf(sellerS.sellerScore) >= WorkspaceTierRegistry.Tier.Strong
-            ? Params.GRACE_STRONG
-            : Params.GRACE_WEAK;
-        ReceivableCommitment.ScheduleTerms memory schedule = ReceivableCommitment.ScheduleTerms({
-            nInstallments: nInstallments, firstMaturity: firstMaturity, interval: interval, grace: grace
-        });
-        ReceivableCommitment.ComputedFundingTerms memory computed = ReceivableCommitment.ComputedFundingTerms({
-            advanceRateBps: advanceRateBps, advanceAmount: advance, holdbackAmount: holdback, tranche: tranche
-        });
-        bytes32 receivableCommitment = ReceivableCommitment.hashReceivable(
-            block.chainid,
-            address(this),
-            sellerAgentId,
-            debtorAgentId,
-            address(USDC),
-            face,
-            terms,
-            schedule,
-            computed,
-            docs.assignmentHash
+        OriginationProjection memory projection = _originationProjection(
+            sellerAgentId, debtorAgentId, face, nInstallments, firstMaturity, interval, terms, docs.assignmentHash
         );
-        originalInvoiceId = invoiceIdOfReceivableCommitment[receivableCommitment];
+        if (projection.receivableCommitment != expectedReceivableCommitment) {
+            revert ReceivableCommitmentMismatch(expectedReceivableCommitment, projection.receivableCommitment);
+        }
+        originalInvoiceId = invoiceIdOfReceivableCommitment[projection.receivableCommitment];
         if (originalInvoiceId != 0) {
-            revert ReceivableCommitmentAlreadyConsumed(receivableCommitment, originalInvoiceId);
+            revert ReceivableCommitmentAlreadyConsumed(projection.receivableCommitment, originalInvoiceId);
         }
         bytes32 documentCommitment = ReceivableCommitment.hashDocumentBundle(terms.authority, docs, terms.recourse);
 
         // I1 — the fraud ramp (SPEC §3.5)
         uint256 limit = TIERS.limitOf(sellerAgentId);
         uint256 current = outstandingOf[sellerAgentId];
-        if (current + advance > limit) revert ExposureCapExceeded(sellerAgentId, advance, limit - current);
+        if (current + projection.advance > limit) {
+            revert ExposureCapExceeded(sellerAgentId, projection.advance, limit - current);
+        }
         // debtor concentration
         uint256 debtorCap = TIERS.debtorConcentrationCap(sellerAgentId);
-        if (debtorOutstandingOf[sellerAgentId][debtorAgentId] + advance > debtorCap) {
+        if (debtorOutstandingOf[sellerAgentId][debtorAgentId] + projection.advance > debtorCap) {
             revert ConcentrationCapExceeded(debtorAgentId);
         }
         // velocity
@@ -486,9 +483,10 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard, IReceivableDomainView {
         // bond gate (SPEC §3.2): weak-tier sellers must have POSTED first-loss capital
         // covering bondShare × reserveRatio × new outstanding, before funds move.
         if (address(reserve) != address(0)) {
-            uint16 bondShare = TIERS.bondShareBps(sellerS.sellerScore);
-            uint256 requiredFloor = ((current + advance) * TIERS.reserveRatioBps(sellerS.sellerScore) / Params.BPS)
-                * bondShare / Params.BPS;
+            uint16 bondShare = TIERS.bondShareBps(projection.sellerScore);
+            uint256 requiredFloor =
+                ((current + projection.advance) * TIERS.reserveRatioBps(projection.sellerScore) / Params.BPS)
+                    * bondShare / Params.BPS;
             if (bondShare > 0 && reserve.balanceOf(sellerAgentId) < requiredFloor) {
                 revert BondNotPosted(requiredFloor, reserve.balanceOf(sellerAgentId));
             }
@@ -498,8 +496,8 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard, IReceivableDomainView {
         // Tranche placement (SPEC §3.4): cash custody is shared, but risk capacity is
         // not. The selected tranche must itself have net unencumbered NAV, preventing
         // a Junior-C receivable from funding against senior-only capital.
-        if (totalLiquid < advance || trancheCapacity(tranche) < advance) {
-            revert InsufficientTrancheLiquidity(tranche);
+        if (totalLiquid < projection.advance || trancheCapacity(projection.tranche) < projection.advance) {
+            revert InsufficientTrancheLiquidity(projection.tranche);
         }
 
         invoiceId = nextInvoiceId++;
@@ -507,38 +505,38 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard, IReceivableDomainView {
             sellerAgentId: sellerAgentId,
             debtorAgentId: debtorAgentId,
             face: face,
-            advance: advance,
-            outstanding: advance,
-            holdback: holdback,
+            advance: projection.advance,
+            outstanding: projection.advance,
+            holdback: projection.holdback,
             holdbackCollected: 0,
             firstMaturity: firstMaturity,
             interval: interval,
-            grace: grace,
+            grace: projection.grace,
             nInstallments: nInstallments,
             paidInstallments: 0,
-            tranche: tranche,
+            tranche: projection.tranche,
             status: Status.Funded
         });
 
-        outstandingOf[sellerAgentId] = current + advance;
-        debtorOutstandingOf[sellerAgentId][debtorAgentId] += advance;
-        totalLiquid -= advance;
-        totalPrincipal += advance;
-        tranchePrincipal[tranche] += advance;
+        outstandingOf[sellerAgentId] = current + projection.advance;
+        debtorOutstandingOf[sellerAgentId][debtorAgentId] += projection.advance;
+        totalLiquid -= projection.advance;
+        totalPrincipal += projection.advance;
+        tranchePrincipal[projection.tranche] += projection.advance;
 
         invoiceIdOfAuthorityInvoiceId[terms.authority.authorityInvoiceId] = invoiceId;
         authorityInvoiceIdOf[invoiceId] = terms.authority.authorityInvoiceId;
-        invoiceIdOfReceivableCommitment[receivableCommitment] = invoiceId;
-        receivableCommitmentOf[invoiceId] = receivableCommitment;
+        invoiceIdOfReceivableCommitment[projection.receivableCommitment] = invoiceId;
+        receivableCommitmentOf[invoiceId] = projection.receivableCommitment;
         documentCommitmentOf[invoiceId] = documentCommitment;
         authorityEvidenceCommitmentOf[invoiceId] = terms.authority.authorityEvidenceCommitment;
         verifierConfigIdOf[invoiceId] = terms.authority.verifierConfigId;
         recourseOf[invoiceId] = terms.recourse;
-        advanceRateBpsOf[invoiceId] = advanceRateBps;
+        advanceRateBpsOf[invoiceId] = projection.advanceRateBps;
 
         emit AuthorityInvoiceConsumed(
             terms.authority.authorityInvoiceId,
-            receivableCommitment,
+            projection.receivableCommitment,
             invoiceId,
             terms.authority.authorityEvidenceCommitment,
             documentCommitment,
@@ -546,8 +544,73 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard, IReceivableDomainView {
         );
 
         BINV_TOKEN.mint(IDENTITY.ownerOf(sellerAgentId), invoiceId, docs);
-        USDC.safeTransfer(IDENTITY.ownerOf(sellerAgentId), advance);
-        emit InvoiceLocked(invoiceId, sellerAgentId, debtorAgentId, face, advance, tranche);
+        USDC.safeTransfer(IDENTITY.ownerOf(sellerAgentId), projection.advance);
+        emit InvoiceLocked(invoiceId, sellerAgentId, debtorAgentId, face, projection.advance, projection.tranche);
+    }
+
+    /// @notice Return the commitment that a lock would bind to under current
+    ///         on-chain scores, pair history and tier policy.
+    /// @dev The lock transaction recomputes this projection and rejects any
+    ///      expected value produced from stale preflight state.
+    function previewReceivableCommitment(
+        uint256 sellerAgentId,
+        uint256 debtorAgentId,
+        uint128 face,
+        uint8 nInstallments,
+        uint64 firstMaturity,
+        uint32 interval,
+        ReceivableCommitment.FundingTerms calldata terms,
+        bytes32 assignmentHash
+    ) external view returns (bytes32) {
+        return _originationProjection(
+            sellerAgentId, debtorAgentId, face, nInstallments, firstMaturity, interval, terms, assignmentHash
+        )
+        .receivableCommitment;
+    }
+
+    function _originationProjection(
+        uint256 sellerAgentId,
+        uint256 debtorAgentId,
+        uint128 face,
+        uint8 nInstallments,
+        uint64 firstMaturity,
+        uint32 interval,
+        ReceivableCommitment.FundingTerms memory terms,
+        bytes32 assignmentHash
+    ) internal view returns (OriginationProjection memory projection) {
+        projection.pairHistory = TIERS.hasPairHistory(sellerAgentId, debtorAgentId);
+        projection.sellerScore = REPUTATION.scoreOf(sellerAgentId).sellerScore;
+        projection.debtorScore = REPUTATION.scoreOf(debtorAgentId).debtorScore;
+        projection.advanceRateBps = TIERS.advanceRateBps(projection.debtorScore, projection.pairHistory);
+        projection.advance = uint128((uint256(face) * projection.advanceRateBps) / Params.BPS);
+        projection.holdback = face - projection.advance;
+        projection.tranche =
+            uint8(TIERS.trancheEligibility(projection.sellerScore, projection.debtorScore, projection.pairHistory));
+        projection.grace = TIERS.tierOf(projection.sellerScore) >= WorkspaceTierRegistry.Tier.Strong
+            ? Params.GRACE_STRONG
+            : Params.GRACE_WEAK;
+
+        ReceivableCommitment.ScheduleTerms memory schedule = ReceivableCommitment.ScheduleTerms({
+            nInstallments: nInstallments, firstMaturity: firstMaturity, interval: interval, grace: projection.grace
+        });
+        ReceivableCommitment.ComputedFundingTerms memory computed = ReceivableCommitment.ComputedFundingTerms({
+            advanceRateBps: projection.advanceRateBps,
+            advanceAmount: projection.advance,
+            holdbackAmount: projection.holdback,
+            tranche: projection.tranche
+        });
+        projection.receivableCommitment = ReceivableCommitment.hashReceivable(
+            block.chainid,
+            address(this),
+            sellerAgentId,
+            debtorAgentId,
+            address(USDC),
+            face,
+            terms,
+            schedule,
+            computed,
+            assignmentHash
+        );
     }
 
     function _validateAuthorityFunding(
