@@ -4,24 +4,22 @@ pragma solidity 0.8.26;
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MemoConduit, IAddressBook} from "../../src/rails/MemoConduit.sol";
-import {IArcMemo} from "../../src/interfaces/IArcMemo.sol";
 import {MockUSDC3009} from "../mocks/MockUSDC3009.sol";
-import {MockArcUSDC, MockArcMemo, MockAddressBook, MockMultisigAccount} from "../mocks/MockArcMemoStack.sol";
+import {MockArcUSDC, MockAddressBook, MockMultisigAccount} from "../mocks/MockMemoConduitStack.sol";
 
 /// @title MemoConduit unit tests — treasury (ERC-1271) pays a memo-tagged transfer atomically.
 contract MemoConduitTest is Test {
-    event Memo(
-        address indexed sender,
-        address indexed target,
-        bytes32 callDataHash,
+    event MemoConduitPayment(
         bytes32 indexed memoId,
-        bytes memo,
-        uint256 memoIndex
+        address indexed from,
+        address indexed recipient,
+        address token,
+        uint256 amount,
+        bytes memo
     );
 
     MockArcUSDC usdc;
     MockArcUSDC eurc;
-    MockArcMemo memo;
     MockAddressBook book;
     MemoConduit conduit;
     MockMultisigAccount treasury;
@@ -44,14 +42,11 @@ contract MemoConduitTest is Test {
 
         usdc = new MockArcUSDC();
         eurc = new MockArcUSDC();
-        memo = new MockArcMemo();
-        usdc.setMemoForwarder(address(memo));
-        eurc.setMemoForwarder(address(memo));
         book = new MockAddressBook();
 
         address[] memory tokens = new address[](1);
         tokens[0] = address(usdc);
-        conduit = new MemoConduit(IArcMemo(address(memo)), IAddressBook(address(book)), tokens);
+        conduit = new MemoConduit(IAddressBook(address(book)), tokens);
 
         treasury = new MockMultisigAccount(vm.addr(signerKey));
         usdc.mint(address(treasury), 10_000e6);
@@ -100,18 +95,11 @@ contract MemoConduitTest is Test {
 
     // ── happy path ───────────────────────────────────────────────────────────
 
-    function test_anyoneSubmits_recipientPaid_memoEmitted_nothingHeld() public {
+    function test_anyoneSubmits_recipientPaid_eventEmitted_nothingHeld() public {
         bytes memory sig = _signedFor(recipient);
 
-        vm.expectEmit(true, true, true, true, address(memo));
-        emit Memo(
-            address(conduit),
-            address(usdc),
-            keccak256(abi.encodeCall(IERC20.transfer, (recipient, AMOUNT))),
-            MEMO_ID,
-            MEMO_DATA,
-            0
-        );
+        vm.expectEmit(true, true, true, true, address(conduit));
+        emit MemoConduitPayment(MEMO_ID, address(treasury), recipient, address(usdc), AMOUNT, MEMO_DATA);
         vm.prank(relayer);
         _pay(recipient, AMOUNT, MEMO_ID, MEMO_DATA, sig);
 
@@ -218,7 +206,7 @@ contract MemoConduitTest is Test {
         address[] memory tokens = new address[](2);
         tokens[0] = address(usdc);
         tokens[1] = address(eurc);
-        conduit = new MemoConduit(IArcMemo(address(memo)), IAddressBook(address(book)), tokens);
+        conduit = new MemoConduit(IAddressBook(address(book)), tokens);
         bytes memory sig = _sign(eurc, AMOUNT, _nonce(address(eurc), recipient, AMOUNT, MEMO_ID, MEMO_DATA));
         conduit.payWithMemo(
             address(eurc), address(treasury), recipient, AMOUNT, validAfter, validBefore, MEMO_ID, MEMO_DATA, sig
@@ -239,7 +227,7 @@ contract MemoConduitTest is Test {
         bytes32 here = _nonce(address(usdc), recipient, AMOUNT, MEMO_ID, MEMO_DATA);
         address[] memory tokens = new address[](1);
         tokens[0] = address(usdc);
-        MemoConduit other = new MemoConduit(IArcMemo(address(memo)), IAddressBook(address(book)), tokens);
+        MemoConduit other = new MemoConduit(IAddressBook(address(book)), tokens);
         assertTrue(
             here
                 != other.memoPaymentNonceOf(
@@ -256,7 +244,7 @@ contract MemoConduitTest is Test {
         address at = 0x1111111111111111111111111111111111111111;
         address[] memory tokens = new address[](1);
         tokens[0] = address(usdc);
-        deployCodeTo("MemoConduit.sol:MemoConduit", abi.encode(address(memo), address(book), tokens), at);
+        deployCodeTo("MemoConduit.sol:MemoConduit", abi.encode(address(book), tokens), at);
         vm.chainId(5042002);
         bytes memory memoData = bytes("reimbursement:0d5e21fc-3f2c-4c72-9d4e-8f4d5b3a1c2e:0");
         bytes32 nonce = MemoConduit(at)

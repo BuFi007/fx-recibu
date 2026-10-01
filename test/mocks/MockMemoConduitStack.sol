@@ -6,15 +6,8 @@ import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/Signa
 import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
 import {MockUSDC3009} from "./MockUSDC3009.sol";
 
-/// @title MockArcUSDC — MockUSDC3009 + the FiatToken v2.2 `bytes signature` overload (ERC-1271)
-///        + a hook the mock Memo predeploy uses to emulate Arc's sender-preserving forwarding.
+/// @title MockArcUSDC — MockUSDC3009 + the FiatToken v2.2 `bytes signature` overload (ERC-1271).
 contract MockArcUSDC is MockUSDC3009 {
-    address public memoForwarder;
-
-    function setMemoForwarder(address forwarder) external {
-        memoForwarder = forwarder;
-    }
-
     function receiveWithAuthorization(
         address from,
         address to,
@@ -34,34 +27,6 @@ contract MockArcUSDC is MockUSDC3009 {
         if (!SignatureChecker.isValidSignatureNow(from, digest, signature)) revert InvalidSignature();
         authorizationState[from][nonce] = true;
         _transfer(from, to, value);
-    }
-
-    /// @dev Arc's predeploy makes the inner call with the ORIGINAL caller as sender.
-    function forwardTransfer(address sender, address to, uint256 value) external returns (bool) {
-        require(msg.sender == memoForwarder, "not memo");
-        _transfer(sender, to, value);
-        return true;
-    }
-}
-
-/// @title MockArcMemo — emulates the Arc Memo predeploy for `transfer` inner calls.
-contract MockArcMemo {
-    event Memo(
-        address indexed sender,
-        address indexed target,
-        bytes32 callDataHash,
-        bytes32 indexed memoId,
-        bytes memo,
-        uint256 memoIndex
-    );
-
-    uint256 public memoIndex;
-
-    function memo(address target, bytes calldata data, bytes32 memoId, bytes calldata memoData) external {
-        require(bytes4(data[:4]) == bytes4(keccak256("transfer(address,uint256)")), "only transfer");
-        (address to, uint256 value) = abi.decode(data[4:], (address, uint256));
-        MockArcUSDC(target).forwardTransfer(msg.sender, to, value);
-        emit Memo(msg.sender, target, keccak256(data), memoId, memoData, memoIndex++);
     }
 }
 

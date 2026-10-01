@@ -3,7 +3,6 @@ pragma solidity 0.8.26;
 
 import {Script} from "forge-std/Script.sol";
 import {MemoConduit, IAddressBook} from "../src/rails/MemoConduit.sol";
-import {IArcMemo} from "../src/interfaces/IArcMemo.sol";
 
 /// @title DeployMemoConduit — Arc TESTNET only (5042002).
 /// @notice Token set is fixed at deploy: only tokens whose implementation carries the FiatToken
@@ -16,7 +15,6 @@ import {IArcMemo} from "../src/interfaces/IArcMemo.sol";
 ///   forge script script/DeployMemoConduit.s.sol --rpc-url https://rpc.testnet.arc.network \
 ///     --private-key $DEPLOYER_KEY --broadcast
 contract DeployMemoConduit is Script {
-    address constant ARC_MEMO = 0x5294E9927c3306DcBaDb03fe70b92e01cCede505;
     address constant ADDRESS_BOOK = 0x0000000d81083B16EA76dfab46B0315B0eDBF3d0;
     address constant USDC = 0x3600000000000000000000000000000000000000;
     address constant EURC_TESTNET = 0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a;
@@ -27,7 +25,7 @@ contract DeployMemoConduit is Script {
         tokens[0] = USDC;
         tokens[1] = EURC_TESTNET;
         vm.startBroadcast();
-        conduit = new MemoConduit(IArcMemo(ARC_MEMO), IAddressBook(ADDRESS_BOOK), tokens);
+        conduit = new MemoConduit(IAddressBook(ADDRESS_BOOK), tokens);
         vm.stopBroadcast();
     }
 }
