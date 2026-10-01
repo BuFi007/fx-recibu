@@ -1,0 +1,17 @@
+{
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "contract": "MemoConduit",
+  "address": "0x0282e3a55d0b591486fb5cd70253ede7d3fbc971",
+  "deployTx": "0x368e4ec7e2245818573e273b975a586d589c9e44525502e6d9ac97426ad20f97",
+  "deployedAt": "2026-10-01",
+  "deployer": "0x09Ce8E2B3Fede2727dA4392Ea8Fe618305ba0474",
+  "deployerNote": "desk testnet deployer (.deployer-wallet.json). Holds no role: MemoConduit has no owner and no setter.",
+  "addressBook": "0x0000000d81083B16EA76dfab46B0315B0eDBF3d0",
+  "tokens": {
+    "USDC": "0x3600000000000000000000000000000000000000",
+    "EURC": "0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a"
+  },
+  "verified": "receipt status 1; ADDRESS_BOOK, supportedToken(USDC/EURC)=true, supportedToken(JPYC)=false, memoPaymentNonceOf matches desk computeMemoConduitNonce (2026-10-01)",
+  "deskPlan": "plans/397-memo-conduit-treasury-memo-settlement.md"
+}
