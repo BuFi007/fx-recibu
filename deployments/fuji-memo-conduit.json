@@ -1,0 +1,15 @@
+{
+  "network": "avalanche-fuji",
+  "chainId": 43113,
+  "contract": "MemoConduit",
+  "address": "0xA0d880E0977bB7eE8B4D6DC0cC23dC5e527b62c4",
+  "deployTx": "0x7254751a48a48abaea7988f7a7c066e9b91ad6b8ca969e9f2f9ff59eb2ddd854",
+  "deployedAt": "2026-10-01",
+  "deployer": "0x09Ce8E2B3Fede2727dA4392Ea8Fe618305ba0474 (desk testnet deployer; holds no role)",
+  "addressBook": "0x0000000d81083B16EA76dfab46B0315B0eDBF3d0",
+  "tokens": {
+    "USDC": "0x5425890298aed601595a70AB815c96711a31Bc65",
+    "EURC": "0x5E44db7996c682E92a960b65AC713a54AD815c6B"
+  },
+  "why": "dev/erp-beta workspaces' primary receive treasury is AVAX-FUJI, so settlement flows on erp-beta settle on Fuji"
+}
