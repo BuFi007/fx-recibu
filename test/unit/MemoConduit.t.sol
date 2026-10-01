@@ -249,4 +249,27 @@ contract MemoConduitTest is Test {
         vm.chainId(block.chainid + 1);
         assertTrue(here != _nonce(address(usdc), recipient, AMOUNT, MEMO_ID, MEMO_DATA));
     }
+
+    /// Shared vector with desk `packages/smart-contract-deploy/src/memo-conduit.test.ts`
+    /// (computed independently with cast). If this moves, desk-signed nonces stop matching.
+    function test_nonceMatchesDeskVector() public {
+        address at = 0x1111111111111111111111111111111111111111;
+        address[] memory tokens = new address[](1);
+        tokens[0] = address(usdc);
+        deployCodeTo("MemoConduit.sol:MemoConduit", abi.encode(address(memo), address(book), tokens), at);
+        vm.chainId(5042002);
+        bytes memory memoData = bytes("reimbursement:0d5e21fc-3f2c-4c72-9d4e-8f4d5b3a1c2e:0");
+        bytes32 nonce = MemoConduit(at)
+            .memoPaymentNonceOf(
+                0x3600000000000000000000000000000000000000,
+                0x2222222222222222222222222222222222222222,
+                0x3333333333333333333333333333333333333333,
+                1_500_000_000,
+                1_760_000_000,
+                1_760_003_600,
+                keccak256(memoData),
+                memoData
+            );
+        assertEq(nonce, 0x5cf46b71cedcdd81150643ef05e34a67817ee82ccd6ed1c1495d4177e3fe79fa);
+    }
 }
