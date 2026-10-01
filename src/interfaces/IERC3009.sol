@@ -31,5 +31,17 @@ interface IERC3009 {
         bytes32 s
     ) external;
 
+    /// @notice FiatToken v2.2 overload: `signature` is validated with ERC-1271 when `from` is a
+    ///         contract (smart-account / multisig payers), else as a packed ECDSA signature.
+    function receiveWithAuthorization(
+        address from,
+        address to,
+        uint256 value,
+        uint256 validAfter,
+        uint256 validBefore,
+        bytes32 nonce,
+        bytes memory signature
+    ) external;
+
     function authorizationState(address authorizer, bytes32 nonce) external view returns (bool);
 }
