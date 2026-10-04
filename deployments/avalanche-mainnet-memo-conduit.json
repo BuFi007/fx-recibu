@@ -1,0 +1,19 @@
+{
+  "network": "avalanche",
+  "chainId": 43114,
+  "address": "0x536268d0A6C32a7161BA146F5673dFcF13F1fFe2",
+  "deployTx": "0x2df7d847f941ee885dfc2101632a9a7175a4cd88d2dc830be2810bf495340bba",
+  "deployerWallet": "0xd1e6a67e7550476ebf7bdb82e7d7a597bb6af533 (Circle live SCA, refId memo-conduit-deployer)",
+  "tokens": {
+    "USDC": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+    "EURC": "0xC891EB4cbdEFf6e073e859e987815Ed1505c2ACD"
+  },
+  "contract": "MemoConduit",
+  "deployedAt": "2026-10-01",
+  "method": "Arachnid CREATE2 deployer 0x4e59b44847b379578588920cA78FbF26c0B4956C called as a Circle DCW contract execution (Gas Station sponsored); salt keccak256(\"bufi.memo-conduit.v1\")",
+  "addressBook": "0x0000000d81083B16EA76dfab46B0315B0eDBF3d0",
+  "owner": "none (immutable, no setter, no proxy)",
+  "audit": "NOT YET AUDITED \u2014 founder go 2026-10-01, audit to follow; a fix ships as a new deployment + desk address switch",
+  "verified": "runtime bytecode == the Arc-testnet deployment proven live (tx 0x922572cd\u2026) with immutables masked; ADDRESS_BOOK + supportedToken checked on-chain",
+  "deskPlan": "plans/397-memo-conduit-treasury-memo-settlement.md"
+}
