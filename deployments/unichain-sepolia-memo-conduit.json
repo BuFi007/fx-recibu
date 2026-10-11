@@ -1,0 +1,13 @@
+{
+  "network": "unichain-sepolia",
+  "chainId": 1301,
+  "contract": "MemoConduit",
+  "address": "0x497c7C41c376A56A4743E1984D9f4364071499E9",
+  "deployTx": "0x03b62092c42387f966df9b70774698013d765d5f108b99676f5ac56bee932b75",
+  "deployedAt": "2026-10-11",
+  "deployer": "0x09Ce8E2B3Fede2727dA4392Ea8Fe618305ba0474 (desk testnet deployer; holds no role)",
+  "factory": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+  "salt": "keccak256(\"bufi.memo-conduit.v1\")",
+  "addressBook": "0x0000000d81083B16EA76dfab46B0315B0eDBF3d0",
+  "why": "multichain testnet treasuries on erp-beta pay invoices and reimbursements with a memo on every EVM testnet (founder, 2026-10-11)"
+}

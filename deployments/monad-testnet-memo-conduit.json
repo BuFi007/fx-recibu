@@ -1,0 +1,13 @@
+{
+  "network": "monad-testnet",
+  "chainId": 10143,
+  "contract": "MemoConduit",
+  "address": "0x1e8E3D21244a36BE90f52faD494530C71042088f",
+  "deployTx": "0xff64de8980cd41134d2d510207a1992016a112443e02ec3f04af923f68c3463a",
+  "deployedAt": "2026-10-11",
+  "deployer": "0x09Ce8E2B3Fede2727dA4392Ea8Fe618305ba0474 (desk testnet deployer; holds no role)",
+  "factory": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+  "salt": "keccak256(\"bufi.memo-conduit.v1\")",
+  "addressBook": "0x0000000d81083B16EA76dfab46B0315B0eDBF3d0",
+  "why": "multichain testnet treasuries on erp-beta pay invoices and reimbursements with a memo on every EVM testnet (founder, 2026-10-11)"
+}
