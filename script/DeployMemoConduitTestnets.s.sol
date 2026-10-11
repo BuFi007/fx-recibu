@@ -6,7 +6,8 @@ import {MemoConduit, IAddressBook} from "../src/rails/MemoConduit.sol";
 
 /// @title DeployMemoConduitTestnets — MemoConduit on the remaining EVM TESTNETS.
 /// @notice Allowlist: ETH-SEPOLIA 11155111, BASE-SEPOLIA 84532, ARB-SEPOLIA 421614,
-///         OP-SEPOLIA 11155420, MATIC-AMOY 80002, UNI-SEPOLIA 1301, MONAD-TESTNET 10143.
+///         OP-SEPOLIA 11155420, UNI-SEPOLIA 1301, MONAD-TESTNET 10143. MATIC-AMOY (80002) is
+///         not supported by BUFI (founder, 2026-10-11) and is refused.
 ///         Every other chain reverts — mainnets included. Arc testnet (5042002) and Fuji (43113)
 ///         already have conduits (0x0282e3a5…, 0xA0d880E0…) and are refused here so they are
 ///         never shadowed by a second address.
@@ -35,7 +36,6 @@ contract DeployMemoConduitTestnets is Script {
     address public constant USDC_BASE_SEPOLIA = 0x036CbD53842c5426634e7929541eC2318f3dCF7e;
     address public constant USDC_ARB_SEPOLIA = 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d;
     address public constant USDC_OP_SEPOLIA = 0x5fd84259d66Cd46123540766Be93DFE6D43130D7;
-    address public constant USDC_AMOY = 0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582;
     address public constant USDC_UNI_SEPOLIA = 0x31d0220469e10c4E71834a79b1f276d740d3768F;
     address public constant USDC_MONAD_TESTNET = 0x534b2f3A21130d7a60830c2Df862319e593943A3;
     // EURC — only on the two chains where it exists (both verified)
@@ -53,7 +53,6 @@ contract DeployMemoConduitTestnets is Script {
         if (chainId == 84532) return _two(USDC_BASE_SEPOLIA, EURC_BASE_SEPOLIA);
         if (chainId == 421614) return _one(USDC_ARB_SEPOLIA);
         if (chainId == 11155420) return _one(USDC_OP_SEPOLIA);
-        if (chainId == 80002) return _one(USDC_AMOY);
         if (chainId == 1301) return _one(USDC_UNI_SEPOLIA);
         if (chainId == 10143) return _one(USDC_MONAD_TESTNET);
         if (chainId == 5042002 || chainId == 43113) revert AlreadyDeployedElsewhere(chainId);

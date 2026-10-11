@@ -19,7 +19,7 @@ contract DeployMemoConduitTestnetsTest is Test {
     }
 
     function test_refusesMainnetsAndUnknownChains() public {
-        uint256[10] memory bad = [uint256(1), 5042, 43114, 8453, 42161, 10, 137, 130, 143, 999999];
+        uint256[11] memory bad = [uint256(1), 5042, 43114, 8453, 42161, 10, 137, 130, 143, 80002, 999999];
         for (uint256 i; i < bad.length; ++i) {
             vm.chainId(bad[i]);
             vm.expectRevert(abi.encodeWithSelector(DeployMemoConduitTestnets.ChainNotAllowed.selector, bad[i]));
@@ -51,13 +51,12 @@ contract DeployMemoConduitTestnetsTest is Test {
 
         _single(421614, 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d);
         _single(11155420, 0x5fd84259d66Cd46123540766Be93DFE6D43130D7);
-        _single(80002, 0x41E94Eb019C0762f9Bfcf9Fb1E58725BfB0e7582);
         _single(1301, 0x31d0220469e10c4E71834a79b1f276d740d3768F);
         _single(10143, 0x534b2f3A21130d7a60830c2Df862319e593943A3);
     }
 
     function test_deploysAtPredictedAddressWithTokensAndIsIdempotent() public {
-        uint256[7] memory ok = [uint256(11155111), 84532, 421614, 11155420, 80002, 1301, 10143];
+        uint256[6] memory ok = [uint256(11155111), 84532, 421614, 11155420, 1301, 10143];
         for (uint256 i; i < ok.length; ++i) {
             vm.chainId(ok[i]);
             address predicted = script.predict(ok[i]);
