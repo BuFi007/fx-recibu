@@ -1,0 +1,23 @@
+{
+  "network": "eth-sepolia",
+  "chainId": 11155111,
+  "contract": "MemoConduit",
+  "variant": "cctp",
+  "address": "0x213a44499439C5c837edd7A6fCd824c53146F29D",
+  "deployTx": "0xc9135a6ae79d5963c5e4869d20b396f74205dd9069b653ddc6ed235d4b08b70e",
+  "deployedAt": "2026-10-14",
+  "deployer": "0x09Ce8E2B3Fede2727dA4392Ea8Fe618305ba0474 (desk testnet deployer; holds no role)",
+  "factory": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+  "salt": "keccak256(\"bufi.memo-conduit.cctp.v1\")",
+  "addressBook": "0x0000000d81083B16EA76dfab46B0315B0eDBF3d0",
+  "tokens": [
+    "USDC 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238 (local memo only)",
+    "EURC 0x08210F9170F89Ab7658F0B5E3fF39b0E03C594D4",
+    "cirBTC 0x3a3fe695F684Bf9b9e43CF43C2b895Ea5e392bB3"
+  ],
+  "runtimeKeccak": "0xf8960af4c85aa02d4ce5f45a3cb84792a82aa29a81383348142b2e7bd3ced617",
+  "codeBytes": 13587,
+  "script": "script/DeployMemoConduitCctpTestnets.s.sol",
+  "why": "CCTP v2 USDC + CCTPx EURC/cirBTC bridge payments with memo (testnet only, 2026-10-14). The v1 memo-only conduit on this chain stays live; Desk active destinations are not switched.",
+  "note": "Sepolia creation cost 21.68M gas (eth_estimateGas 22.03M); forge's estimate under-provisioned three attempts that reverted out-of-gas inside the CREATE2 proxy. Final tx sent with cast send --gas-limit 25000000."
+}
