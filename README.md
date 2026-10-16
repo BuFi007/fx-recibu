@@ -65,6 +65,16 @@ M6 (BUFICreditVault over the deployed Morpho **Vault V2** factory `0x6b7F638B…
 deploy-time instantiation of an external factory — scripted in `Deploy` notes, allocated
 across the canonical fx-Telaraña + fx-Recibú markets; no new protocol contract.
 
+## Mainnet deployments: MemoConduit CCTP (2026-10-16)
+
+| Contract | Chain | Address | Status |
+|---|---|---|---|
+| SpokeMemoConduit | Avalanche 43114 | [`0x7b5b1425bb621b014b7257a0d0caf88c453e33c8`](https://snowtrace.io/address/0x7b5b1425bb621b014b7257a0d0caf88c453e33c8) | **Deployed**, tx [`0xaa73ba08…`](https://snowtrace.io/tx/0xaa73ba08086005bb23a98ca4f147c540cc18d17262f49a498902c7e1f344ad60), block 97734276, gas 3,328,621. No owner; one-way Avalanche→Arc via CCTP |
+| MemoConduit (checkout, CCTP) | Arc 5042 | `0x1D4C802c18145C746B3BF5F12433C08b96e9066a` (predicted) | **Pending**, not deployed |
+| MemoConduit (checkout, CCTP) | Avalanche 43114 | `0x28a3Ef42725396D006495B5312277DdDF849a354` (predicted) | **Pending**, not deployed |
+
+The earlier SpokeMemoConduit prediction `0x0c678dDF…64d0` is wrong; use `0x7b5b1425bb621b014b7257a0d0caf88c453e33c8`. Record: `deployments/avalanche-mainnet-spoke-memo-conduit.json`; broadcast: `broadcast/DeploySpokeMemoConduitMainnet.s.sol/43114/run-latest.json`.
+
 ## The three invariants that make it safe (SPEC §4.9)
 
 1. **`L(w)` moves only on realized repayment** — a compromised scorer can misprice, never

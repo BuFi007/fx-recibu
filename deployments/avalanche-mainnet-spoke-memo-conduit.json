@@ -1,0 +1,22 @@
+{
+  "network": "avalanche",
+  "chainId": 43114,
+  "contract": "SpokeMemoConduit",
+  "address": "0x7b5b1425bb621b014b7257a0d0caf88c453e33c8",
+  "deployTx": "0xaa73ba08086005bb23a98ca4f147c540cc18d17262f49a498902c7e1f344ad60",
+  "block": 97734276,
+  "gasUsed": 3328621,
+  "deployedAt": "2026-10-16",
+  "deployer": "0x09Ce8E2B3Fede2727dA4392Ea8Fe618305ba0474",
+  "owner": "none (immutable)",
+  "direction": "one-way Avalanche -> Arc via CCTP (emits RepaymentInitiated)",
+  "verified": "on-chain 2026-10-16",
+  "supersedesPrediction": "0x0c678dDF9edeEA57c22053AbAFCe656299eC64d0 (stale pre-deploy prediction; do not use)",
+  "broadcast": "broadcast/DeploySpokeMemoConduitMainnet.s.sol/43114/run-latest.json",
+  "pending": {
+    "MemoConduit (checkout, CCTP bidirectional)": {
+      "arc-5042": "0x1D4C802c18145C746B3BF5F12433C08b96e9066a (predicted, NOT deployed)",
+      "avalanche-43114": "0x28a3Ef42725396D006495B5312277DdDF849a354 (predicted, NOT deployed)"
+    }
+  }
+}
