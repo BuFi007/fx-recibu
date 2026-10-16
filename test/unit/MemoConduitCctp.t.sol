@@ -268,17 +268,6 @@ contract MemoConduitCctpTest is Test {
         assertEq(token.balanceOf(recipient), 0);
     }
 
-    function test_repaymentInitiatedEmittedForSpokeToHubAccounting() public {
-        MemoConduit.BridgePayment memory p = payment();
-        bytes32 nonce = conduit.bridgePaymentNonceOf(p);
-        vm.expectEmit(true, true, true, true, address(conduit));
-        emit MemoConduit.RepaymentInitiated(
-            p.paymentId, p.termsHash, p.memoId, p.from, p.recipient, AMOUNT, 26, nonce, conduit.CCTP_MESSAGE_TRANSMITTER()
-        );
-        conduit.bridgeWithMemo(p, sign(p));
-        assertEq(conduit.CCTP_MESSAGE_TRANSMITTER(), 0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275);
-    }
-
     function test_constructorRejectsHalfConfiguredCctp() public {
         address[] memory t = new address[](1);
         t[0] = SOURCE_TOKEN;

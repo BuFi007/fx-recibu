@@ -133,14 +133,10 @@ contract MemoConduit is ReentrancyGuard {
     address public immutable CCTPX_EURC_MANAGER;
     address public immutable CCTPX_CIRBTC_MANAGER;
 
-    /// @notice Hub-and-spoke: Arc 5042 is the hub (Midnight pool, escrow). On mainnet the only
-    /// bridge route is the spoke repayment Avalanche 43114 (domain 1) -> Arc 5042 (domain 26).
-    uint256 public constant HUB_CHAIN_ID = 5042;
-    uint256 public constant SPOKE_CHAIN_ID = 43114;
-    uint32 public constant HUB_CCTP_DOMAIN = 26;
-
+    /// @notice Checkout conduit: mainnet USDC routes are bidirectional Arc 5042 <-> Avalanche 43114.
+    /// The one-way DeFi repayment rail is SpokeMemoConduit (inherits this contract).
     function isMainnetChain(uint256 chainId) public pure returns (bool) {
-        return chainId == HUB_CHAIN_ID || chainId == SPOKE_CHAIN_ID;
+        return chainId == 5042 || chainId == 43114;
     }
 
     function isTestnetChain(uint256 chainId) public pure returns (bool) {
@@ -196,24 +192,6 @@ contract MemoConduit is ReentrancyGuard {
         uint32 destinationDomain,
         address destinationToken,
         bytes memo
-    );
-
-    /// @notice Spoke side of a NON-ATOMIC hub repayment (USDC CCTP burn). While in flight the
-    /// Midnight debt on the hub is still open; accounting marks it pending until the hub's
-    /// InvoiceShelf.RepaymentSettled. Convention for advance repayments: `paymentId` = advanceId,
-    /// `termsHash` = Midnight marketId (both are inside the quorum-signed nonce). CCTP V2 assigns
-    /// its nonce off-chain, so the CCTP messageHash = keccak256(MessageSent.message) emitted by
-    /// CCTP_MESSAGE_TRANSMITTER in this same transaction; `bridgeNonce` is this conduit's nonce.
-    event RepaymentInitiated(
-        bytes32 indexed advanceId,
-        bytes32 indexed marketId,
-        bytes32 indexed memoId,
-        address from,
-        address recipient,
-        uint256 amount,
-        uint32 destinationDomain,
-        bytes32 bridgeNonce,
-        address messageTransmitter
     );
 
     /// @notice One per payment. `memoId` is indexed so a payment is findable by document
@@ -328,6 +306,7 @@ contract MemoConduit is ReentrancyGuard {
     function bridgeRouteOf(uint8 protocol, address token, uint256 destinationChainId)
         public
         view
+        virtual
         returns (uint32 sourceDomain, uint32 destinationDomain, address destinationToken, address messenger)
     {
         (address sourceToken, uint32 localDomain) = _asset(protocol, block.chainid);
@@ -335,8 +314,6 @@ contract MemoConduit is ReentrancyGuard {
         if (
             sourceToken == address(0) || remoteToken == address(0) || token != sourceToken
                 || block.chainid == destinationChainId || !supportedToken[token]
-                || (isMainnetChain(block.chainid)
-                    && (block.chainid != SPOKE_CHAIN_ID || destinationChainId != HUB_CHAIN_ID))
         ) revert BridgeRouteNotSupported(block.chainid, destinationChainId, token);
         return (localDomain, remoteDomain, remoteToken, protocol == CCTP_V2_USDC ? CCTP_TOKEN_MESSENGER : CCTPX_SERVICE);
     }
@@ -454,17 +431,7 @@ contract MemoConduit is ReentrancyGuard {
         ) revert BridgeBurnMismatch();
 
         _emitSourceBurn(payment, nonce);
-        emit RepaymentInitiated(
-            payment.paymentId,
-            payment.termsHash,
-            payment.memoId,
-            payment.from,
-            payment.recipient,
-            payment.amount,
-            domain,
-            nonce,
-            CCTP_MESSAGE_TRANSMITTER
-        );
+        _afterCctpBurn(payment, nonce, domain);
     }
 
     /// @notice Native-fee CCTPx transfer, preserving the very same quorum and live
@@ -551,6 +518,9 @@ contract MemoConduit is ReentrancyGuard {
         _emitSourceBurn(payment, nonce);
     }
 
+    /// @dev Extension hook after a successful USDC CCTP burn (no-op for checkout).
+    function _afterCctpBurn(BridgePayment calldata payment, bytes32 nonce, uint32 destinationDomain) internal virtual {}
+
     function _validateBridgePayer(BridgePayment calldata payment) private view {
         if (payment.amount == 0) revert ZeroAmount();
         if (payment.recipient == address(0) || payment.from == address(0)) revert ZeroAddress();
@@ -627,8 +597,8 @@ contract MemoConduit is ReentrancyGuard {
     }
 
     /// @dev Mainnet asset table: CCTP V2 USDC on Arc (domain 26) and Avalanche (domain 1);
-    /// remoteTokenMessengers verified both ways on 2026-10-16. bridgeRouteOf further limits
-    /// mainnet to the spoke->hub direction. Mainnet CCTPx is not routed.
+    /// remoteTokenMessengers verified both ways on 2026-10-16.
+    /// Mainnet CCTPx is not routed.
     function _mainnetAsset(uint8 protocol, uint256 chainId) private pure returns (address token, uint32 domain) {
         if (protocol == CCTP_V2_USDC) {
             if (chainId == 5042) return (0x3600000000000000000000000000000000000000, 26);

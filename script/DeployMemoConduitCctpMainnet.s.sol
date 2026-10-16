@@ -5,20 +5,14 @@ import {MemoConduitCctpConfig} from "../src/rails/MemoConduitCctpConfig.sol";
 import {Script, console2} from "forge-std/Script.sol";
 import {MemoConduit, IAddressBook} from "../src/rails/MemoConduit.sol";
 
-/// @title DeployMemoConduitCctpMainnet — the CCTP MemoConduit on the Avalanche SPOKE.
-/// @notice Hub-and-spoke: Arc 5042 is the hub (Midnight, escrow; see the hub script in the
-///         router PR), Avalanche C-Chain 43114 (CCTP domain 1) is the ONLY chain allowed here.
-///         Its only mainnet bridge route is the repayment to the hub (Arc, domain 26). CCTP
-///         dependencies are passed to the constructor (MemoConduitCctpConfig.mainnet()).
-///
-///         Token set per chain = native Circle USDC + EURC (developers.circle.com
-///         stablecoins/*-contract-addresses, `cast code` verified 2026-10-16). USDC is
-///         bridgeable through CCTP V2 (Avalanche -> Arc only); EURC is local-memo only on mainnet
-///         because MemoConduit configures no mainnet CCTPx manager (fails closed).
-///
-///         A NEW salt, keccak256("bufi.memo-conduit.cctp.mainnet.v1"), so this never collides
-///         with the v1 memo-only conduits (Arc 0x5163...6ba2, Avax 0x5362...fFe2). Re-running
-///         is a no-op once code exists at the predicted address. No owner, nothing to hand over.
+/// @title DeployMemoConduitCctpMainnet — the CHECKOUT MemoConduit with CCTP, on MAINNET.
+/// @notice Allowlist: ARC 5042 (CCTP domain 26) and AVALANCHE C-Chain 43114 (CCTP domain 1).
+///         Bidirectional checkout: USDC bridges Arc <-> Avalanche both ways (CCTP V2); EURC is
+///         local-memo only (no mainnet CCTPx manager configured -> fails closed). CCTP addresses
+///         are constructor immutables (MemoConduitCctpConfig.mainnet()). No owner.
+///         The one-way DeFi repayment rail is SpokeMemoConduit (DeploySpokeMemoConduitMainnet).
+///         Salt keccak256("bufi.memo-conduit.cctp.mainnet.v1"); the v1 memo-only conduits
+///         (Arc 0x5163...6ba2, Avax 0x5362...fFe2, commit 6f5d17b) are untouched.
 ///
 ///   forge script script/DeployMemoConduitCctpMainnet.s.sol --rpc-url <rpc> \
 ///     --private-key $DEPLOYER_PRIVATE_KEY [--broadcast --slow]
@@ -39,7 +33,9 @@ contract DeployMemoConduitCctpMainnet is Script {
 
     function tokensFor(uint256 chainId) public pure returns (address[] memory t) {
         t = new address[](2);
-        if (chainId == 43114) {
+        if (chainId == 5042) {
+            (t[0], t[1]) = (USDC_ARC, EURC_ARC);
+        } else if (chainId == 43114) {
             (t[0], t[1]) = (USDC_AVAX, EURC_AVAX);
         } else {
             revert ChainNotAllowed(chainId);
