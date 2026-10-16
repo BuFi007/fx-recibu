@@ -88,12 +88,18 @@ contract DeployFxRecibuHubMainnet is Script {
         console2.log("RecibuMemoRouter", h.router);
     }
 
-    /// @notice the Safe wiring batch (in order). SERVICER/ADVANCE/SETTLEMENT/ARBITER roles are
-    ///         NOT granted here: they go to contracts that do not exist yet (next PRs).
+    /// @notice the Safe wiring batch (in order), DATA-ONLY launch mode.
+    ///  - wiring: reputation SETTLEMENT_ROLE -> shelf (on-time scoring), shelf.setEscrow,
+    ///    escrow tokens USDC/EURC, escrow ROUTER_ROLE -> router, router tokens USDC/EURC;
+    ///  - data roles to the SAFE (never an EOA): identity ISSUER, reputation ATTESTOR,
+    ///    shelf SERVICER / OPS / ADVANCE, so the Safe can register workspaces, lock invoices,
+    ///    bindAdvance and record repayments (events only, no cash moves on the Midnight path);
+    ///  - escrow SETTLEMENT_ROLE / ARBITER_ROLE are deliberately NOT granted: funds paid into the
+    ///    escrow cannot leave it until a reviewed repay adapter / dispute process exists.
     function safeBatch(address admin) public pure returns (address[] memory to, bytes[] memory data) {
         Hub memory h = predictAll(admin);
-        to = new address[](7);
-        data = new bytes[](7);
+        to = new address[](12);
+        data = new bytes[](12);
         (to[0], data[0]) =
         (h.reputation, abi.encodeCall(IAccessControl.grantRole, (keccak256("SETTLEMENT_ROLE"), h.shelf)));
         (to[1], data[1]) = (h.shelf, abi.encodeCall(InvoiceShelf.setEscrow, (h.escrow)));
@@ -102,6 +108,11 @@ contract DeployFxRecibuHubMainnet is Script {
         (to[4], data[4]) = (h.escrow, abi.encodeCall(IAccessControl.grantRole, (keccak256("ROUTER_ROLE"), h.router)));
         (to[5], data[5]) = (h.router, abi.encodeCall(RecibuMemoRouter.setToken, (USDC, true, CAPS)));
         (to[6], data[6]) = (h.router, abi.encodeCall(RecibuMemoRouter.setToken, (EURC, true, CAPS)));
+        (to[7], data[7]) = (h.identity, abi.encodeCall(IAccessControl.grantRole, (keccak256("ISSUER_ROLE"), admin)));
+        (to[8], data[8]) = (h.reputation, abi.encodeCall(IAccessControl.grantRole, (keccak256("ATTESTOR_ROLE"), admin)));
+        (to[9], data[9]) = (h.shelf, abi.encodeCall(IAccessControl.grantRole, (keccak256("SERVICER_ROLE"), admin)));
+        (to[10], data[10]) = (h.shelf, abi.encodeCall(IAccessControl.grantRole, (keccak256("OPS_ROLE"), admin)));
+        (to[11], data[11]) = (h.shelf, abi.encodeCall(IAccessControl.grantRole, (keccak256("ADVANCE_ROLE"), admin)));
     }
 
     // ── init codes ──

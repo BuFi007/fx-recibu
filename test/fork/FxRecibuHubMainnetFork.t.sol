@@ -7,6 +7,11 @@ import {InvoiceShelf} from "../../src/invoice/InvoiceShelf.sol";
 import {MultiTokenReceivableEscrow} from "../../src/rails/MultiTokenReceivableEscrow.sol";
 import {RecibuMemoRouter} from "../../src/rails/RecibuMemoRouter.sol";
 import {DeployFxRecibuHubMainnet} from "../../script/DeployFxRecibuHubMainnet.s.sol";
+import {BUFIIdentityRegistry} from "../../src/identity/BUFIIdentityRegistry.sol";
+import {BUFIReputationRegistry} from "../../src/identity/BUFIReputationRegistry.sol";
+import {BINV} from "../../src/invoice/BINV.sol";
+import {ReceivableCommitment} from "../../src/libraries/ReceivableCommitment.sol";
+import {FactoringEvidenceV1} from "../../src/libraries/FactoringEvidenceV1.sol";
 
 /// @notice Arc mainnet fork (skips when https://rpc.mainnet.arc.io / ARC_MAINNET_RPC_URL is down).
 contract FxRecibuHubMainnetForkTest is Test {
@@ -58,6 +63,54 @@ contract FxRecibuHubMainnetForkTest is Test {
         assertTrue(allowed);
         assertEq(caps, 3);
         assertEq(address(InvoiceShelf(h.shelf).escrow()), h.escrow);
+
+        // escrow fund-release roles stay unassigned (data-only launch)
+        assertFalse(e.hasRole(e.SETTLEMENT_ROLE(), SAFE));
+        assertFalse(e.hasRole(e.ARBITER_ROLE(), SAFE));
+        assertFalse(e.hasRole(e.SETTLEMENT_ROLE(), DEPLOYER));
+        _dataOnlyFlow(h);
+    }
+
+    /// @dev the data-only runbook, executed by the Safe: register -> KYB -> score -> lock ->
+    ///      bindAdvance -> record repayment. Emits events only; no token moves.
+    function _dataOnlyFlow(DeployFxRecibuHubMainnet.Hub memory h) internal {
+        BUFIIdentityRegistry id = BUFIIdentityRegistry(h.identity);
+        BUFIReputationRegistry rep = BUFIReputationRegistry(h.reputation);
+        InvoiceShelf shelf = InvoiceShelf(h.shelf);
+        vm.startPrank(SAFE);
+        uint256 seller = id.registerWorkspace(keccak256("ws:seller"), makeAddr("sellerOwner"));
+        uint256 debtor = id.registerWorkspace(keccak256("ws:debtor"), makeAddr("debtorOwner"));
+        id.setKybStatus(seller, true);
+        id.setKybStatus(debtor, true);
+        rep.setScore(seller, 74, 74, 1, bytes32("r"));
+        rep.setScore(debtor, 74, 87, 1, bytes32("r"));
+        uint64 first = uint64(block.timestamp + 30 days);
+        uint256 inv = shelf.lockInvoice(
+            seller,
+            debtor,
+            500e6,
+            2,
+            first,
+            30 days,
+            ReceivableCommitment.Terms({
+                canonicalInvoiceCommitmentHash: keccak256("auth-fork-1"),
+                issuedAt: uint64(block.timestamp),
+                dueAt: first + 30 days
+            }),
+            FactoringEvidenceV1({
+                featureRootHash: bytes32("f"), currentSnapshotHash: bytes32("c"), privateTermsHash: bytes32("p")
+            }),
+            BINV.DocBundle(bytes32("inv"), bytes32("assign"), bytes32("pay"), bytes32("svc"), bytes32("disp"))
+        );
+        uint64 maturity = uint64(shelf.dueDate(inv) + shelf.graceOf(inv) + shelf.crossChainBuffer());
+        shelf.bindAdvance(inv, makeAddr("account"), keccak256("market"), maturity, 400e6, 396e6, 11000, bytes32("s"));
+        shelf.recordRepaymentSettled(inv, 100e6, 100e6, 1, keccak256("cctp msg"), keccak256("memo"));
+        shelf.recordAdvanceRepaid(inv, 50e6, keccak256("memo2"));
+        shelf.applyPayment(inv, 150e6); // record-only on the Midnight path
+        vm.stopPrank();
+        assertEq(uint8(shelf.invoiceStatus(inv)), 1);
+        (,,,, uint128 repaid) = shelf.advanceOf(inv);
+        assertEq(repaid, 150e6);
     }
 
     function test_guard_rejectsOtherChains() public {
