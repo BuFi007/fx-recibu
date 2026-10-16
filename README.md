@@ -48,6 +48,47 @@ repository: the production entrypoint `Deploy.run()` intentionally reverts with
 `ProductionActivationDisabled` until the authority, verifier, privacy, and deployment-manifest gates are met.
 Solidity 0.8.26, `via_ir`, optimizer 200.
 
+## Contracts, status and deployments
+
+Audited 2026-10-16 against `main` (7330e6c): `forge build` OK, `forge test` 285 passed / 0 failed (17 suites).
+Production = BUFI desk ([BuFi007/desk-v1](https://github.com/BuFi007/desk-v1) `main`) on **Arc 5042** and **Avalanche C-Chain 43114**.
+Smart-account / conduit contracts and the audit scope live in [BuFi007/BUFI-6900](https://github.com/BuFi007/BUFI-6900).
+
+### Mainnet (production)
+
+| Contract | Chain | Address | Source | Owner | Used by desk |
+|---|---|---|---|---|---|
+| `MemoConduit` | Arc 5042 | [`0x516340a244132c62BEdaE5F886Fd35845Af16ba2`](https://arcscan.app/address/0x516340a244132c62BEdaE5F886Fd35845Af16ba2) | `src/rails/MemoConduit.sol` @ 6f5d17b | none (immutable) | yes, live path |
+| `MemoConduit` | Avalanche 43114 | [`0x536268d0A6C32a7161BA146F5673dFcF13F1fFe2`](https://snowtrace.io/address/0x536268d0A6C32a7161BA146F5673dFcF13F1fFe2) | `src/rails/MemoConduit.sol` @ 6f5d17b | none (immutable) | yes, live path |
+
+Both share runtime codehash `0xedc25ef190ed44af950ff5a2d0cfc69efed3fd41a80db9a800077b6a278bcad4` (checked with `cast code` on 2026-10-16). Not audited yet; a fix ships as a new deployment plus a desk address switch. Records: `deployments/*-mainnet-memo-conduit.json`.
+
+Where desk uses it: `packages/env/src/memo.ts` (`DEFAULT_MEMO_CONDUIT_ADDRESSES`, env `MEMO_CONDUIT_ADDRESSES`), `apps/shiva/src/services/memo-conduit-chains.ts`, `apps/shiva/src/services/treasury-memo-conduit.service.ts`, `packages/smart-contract-deploy/src/memo-conduit.ts` (ABI and nonce mirror), `contracts/deployments.json`.
+
+### Contract inventory
+
+| Contract | Path | Status | Desk prod | Deployments |
+|---|---|---|---|---|
+| MemoConduit | `src/rails/MemoConduit.sol` | live on mainnet | **used (live)** on 5042, 43114 | mainnet: Arc, Avalanche; testnet: Arc testnet, Fuji, Base/Arb/OP/Unichain Sepolia, Monad testnet |
+| MemoConduit CCTP/CCTPx extension | branch `codex/memo-cctp-20261014` (a27a011) | testnet only, not merged | ABI only (`packages/smart-contract-deploy/src/memo-conduit-bridge.ts`); mainnet out of scope | testnets (see that branch) |
+| RecibuMemoRouter | branch `feat/erc3009-memo-router` | testnet only, not merged | configured through env only (`packages/env/src/recibu.ts`, `RECIBU_MEMO_ROUTER_ADDRESSES`); path stays dark | Fuji, Arc testnet |
+| InvoiceShelf | `src/invoice/InvoiceShelf.sol` | testnet | no | Arc testnet `0x787B141A8278D44bF1A514805f8EB6a4567DC464` |
+| ReceivableEscrow | `src/rails/ReceivableEscrow.sol` | testnet | no | Arc testnet `0xd527bf1d048802402720aE3a3349666bf0f5B189` |
+| InvoiceSettlement | `src/rails/InvoiceSettlement.sol` | testnet | no | Arc testnet `0x2060060E10d529039F4120C8bAa49D1BB258962D` |
+| InvoiceMemoRouter | `src/rails/InvoiceMemoRouter.sol` | testnet | no (memoId mirrored in `packages/smart-contract-deploy/src/memo.ts`) | Arc testnet `0x9d0442f78604b9524bF2B17373ba9fB07dF4e000` |
+| WorkspaceOperatingReserve | `src/rails/WorkspaceOperatingReserve.sol` | testnet | no | Arc testnet `0xFA71acC83CF15dd919aaB399e74976b982B84FDf` |
+| BUFIIdentityRegistry | `src/identity/BUFIIdentityRegistry.sol` | testnet | no | Arc testnet `0x63e80E438cFd3727ec8E9536FE04281C1FA9bFb7` |
+| BUFIReputationRegistry | `src/identity/BUFIReputationRegistry.sol` | testnet | no | Arc testnet `0xA37012Bf88E4A61B8D6968D0445173048d5Cc27F` |
+| BUAttestation | `src/identity/BUAttestation.sol` | testnet | no | Arc testnet `0x9674aDB5e843737eC11B2A2B5166b0d06AdD8505` |
+| WorkspaceTierRegistry | `src/credit/WorkspaceTierRegistry.sol` | testnet | no | Arc testnet `0x1899Ea3A876Fd7CbbE5144b21EEcBcA4F1C3E0D9` |
+| BUFIOracle (senior/mezz/junior) | `src/invoice/BUFIOracle.sol` | testnet | no | Arc testnet `0xe80c…7725` / `0x1998…1411` / `0x5F69…925C` |
+| BINV, BIFTranche | `src/invoice/` | not deployed separately | no | none |
+| KybAttestationExtractor, KybWorkspacePolicy | `src/identity/` | not deployed | no | none |
+| FactoringSettlementExtractor | `src/rails/FactoringSettlementExtractor.sol` | not deployed | no | none |
+| RecibuSettlementGuardHook | `src/hooks/RecibuSettlementGuardHook.sol` | not deployed | no | none |
+
+Deploy scripts: `script/Deploy.s.sol` (factoring rail), `script/DeployMemoConduit.s.sol` and `script/DeployMemoConduitTestnets.s.sol` (CREATE2 through `0x4e59b448…956C`, salt `keccak256("bufi.memo-conduit.v1")`).
+
 ## Contract map (milestones)
 
 | Layer | Contracts | Milestone |
