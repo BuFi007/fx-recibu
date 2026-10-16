@@ -99,7 +99,7 @@ interface IMemoCctpXTokenManager {
 /// set is fixed at deploy. Successful legacy payments now record their existing nonce
 /// so this instance cannot also dispatch the same document through its bridge rail.
 ///
-/// The additional testnet-only {bridgeWithMemo}/{bridgeWithMemoCctpX} entry points use
+/// The additional {bridgeWithMemo}/{bridgeWithMemoCctpX} entry points use
 /// the same quorum and live AddressBook, with asset-specific, typed CCTP/CCTPx calls.
 /// They permanently bind one source dispatch per payer/memo, hold no funds afterwards,
 /// and emit a source event which is deliberately distinct from a completed payment.
@@ -117,17 +117,67 @@ contract MemoConduit is ReentrancyGuard {
     mapping(address => bool) public supportedToken;
     mapping(address => mapping(bytes32 => bytes32)) public memoPaymentCommitment;
 
-    /// @notice This additional entry point is deliberately testnet-only. A native token
+    /// @notice Bridge rails resolve Circle dependencies per chain (see below). A native token
     /// presence is not proof that CCTP supports it. Each asset has a separate protocol.
     uint8 public constant CCTP_V2_USDC = 1;
     uint8 public constant CCTPX_EURC = 2;
     uint8 public constant CCTPX_CIRBTC = 3;
     uint32 public constant CCTP_STANDARD_FINALITY = 2000;
-    address public constant CCTP_TOKEN_MESSENGER = 0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA;
-    address public constant CCTP_TOKEN_MINTER = 0xb43db544E2c27092c107639Ad201b3dEfAbcF192;
-    address public constant CCTPX_SERVICE = 0x63753E722bd2C2A5DF6EE19C5106662208B81077;
-    address public constant CCTPX_EURC_MANAGER = 0xE5D6eacf2eD5A7F81cC89d2a216F004092c0C2E0;
-    address public constant CCTPX_CIRBTC_MANAGER = 0xb995F4060c38b7608626d0CCaBE547cdc2c7390A;
+    /// @dev Per-chain Circle dependency config. Nothing is chain-agnostic any more: the
+    /// testnet set answers only on the four bridge testnets, the mainnet set only on Arc
+    /// 5042 and Avalanche 43114, and every other chain returns address(0), which fails the
+    /// `code.length` dependency checks closed. Addresses: developers.circle.com
+    /// /cctp/references/contract-addresses and /cctp/expanded-assets/references/contract-addresses,
+    /// each verified with `cast code` on 2026-10-16.
+    address internal constant TESTNET_CCTP_TOKEN_MESSENGER = 0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA;
+    address internal constant TESTNET_CCTP_TOKEN_MINTER = 0xb43db544E2c27092c107639Ad201b3dEfAbcF192;
+    address internal constant TESTNET_CCTPX_SERVICE = 0x63753E722bd2C2A5DF6EE19C5106662208B81077;
+    address internal constant TESTNET_CCTPX_EURC_MANAGER = 0xE5D6eacf2eD5A7F81cC89d2a216F004092c0C2E0;
+    address internal constant TESTNET_CCTPX_CIRBTC_MANAGER = 0xb995F4060c38b7608626d0CCaBE547cdc2c7390A;
+    address internal constant MAINNET_CCTP_TOKEN_MESSENGER = 0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d;
+    address internal constant MAINNET_CCTP_MESSAGE_TRANSMITTER = 0x81D40F21F12A8F0E3252Bccb954D722d4c464B64;
+    address internal constant MAINNET_CCTP_TOKEN_MINTER = 0xfd78EE919681417d192449715b2594ab58f5D002;
+    address internal constant MAINNET_CCTPX_SERVICE = 0x431871229103b780868f8C6BB820cd16ECf942BC;
+
+    function isMainnetChain(uint256 chainId) public pure returns (bool) {
+        return chainId == 5042 || chainId == 43114;
+    }
+
+    function isTestnetChain(uint256 chainId) public pure returns (bool) {
+        return chainId == 11155111 || chainId == 84532 || chainId == 43113 || chainId == 5042002;
+    }
+
+    // solhint-disable func-name-mixedcase
+    function CCTP_TOKEN_MESSENGER() public view returns (address) {
+        if (isMainnetChain(block.chainid)) return MAINNET_CCTP_TOKEN_MESSENGER;
+        if (isTestnetChain(block.chainid)) return TESTNET_CCTP_TOKEN_MESSENGER;
+        return address(0);
+    }
+
+    function CCTP_TOKEN_MINTER() public view returns (address) {
+        if (isMainnetChain(block.chainid)) return MAINNET_CCTP_TOKEN_MINTER;
+        if (isTestnetChain(block.chainid)) return TESTNET_CCTP_TOKEN_MINTER;
+        return address(0);
+    }
+
+    function CCTPX_SERVICE() public view returns (address) {
+        if (isMainnetChain(block.chainid)) return MAINNET_CCTPX_SERVICE;
+        if (isTestnetChain(block.chainid)) return TESTNET_CCTPX_SERVICE;
+        return address(0);
+    }
+
+    /// @dev Mainnet EURC/cirBTC CCTPx managers are NOT configured: the testnet tokenIds are
+    /// not registered on mainnet CCTS (resolveTokenManager reverts) and Circle publishes no
+    /// mainnet tokenId. Mainnet CCTPx therefore fails closed until a reviewed upgrade.
+    function CCTPX_EURC_MANAGER() public view returns (address) {
+        return isTestnetChain(block.chainid) ? TESTNET_CCTPX_EURC_MANAGER : address(0);
+    }
+
+    function CCTPX_CIRBTC_MANAGER() public view returns (address) {
+        return isTestnetChain(block.chainid) ? TESTNET_CCTPX_CIRBTC_MANAGER : address(0);
+    }
+    // solhint-enable func-name-mixedcase
+
     bytes32 public constant CCTPX_EURC_TOKEN_ID = 0x2587821a0ee7daa174b95436b5dab1731cfa1844775b010217d3c0dd02a4eecd;
     bytes32 public constant CCTPX_CIRBTC_TOKEN_ID = 0x7c27b7b6485f3ea49b7d1a439e288d3c3116f533302afabb7e372dfc0770cc7d;
 
@@ -285,13 +335,19 @@ contract MemoConduit is ReentrancyGuard {
         view
         returns (uint32 sourceDomain, uint32 destinationDomain, address destinationToken, address messenger)
     {
-        (address sourceToken, uint32 localDomain) = _testnetAsset(protocol, block.chainid);
-        (address remoteToken, uint32 remoteDomain) = _testnetAsset(protocol, destinationChainId);
+        (address sourceToken, uint32 localDomain) = _asset(protocol, block.chainid);
+        (address remoteToken, uint32 remoteDomain) = _asset(protocol, destinationChainId);
         if (
             sourceToken == address(0) || remoteToken == address(0) || token != sourceToken
                 || block.chainid == destinationChainId || !supportedToken[token]
         ) revert BridgeRouteNotSupported(block.chainid, destinationChainId, token);
-        return (localDomain, remoteDomain, remoteToken, protocol == CCTP_V2_USDC ? CCTP_TOKEN_MESSENGER : CCTPX_SERVICE);
+        return
+            (
+                localDomain,
+                remoteDomain,
+                remoteToken,
+                protocol == CCTP_V2_USDC ? CCTP_TOKEN_MESSENGER() : CCTPX_SERVICE()
+            );
     }
 
     function bridgeTokenIdOf(uint8 protocol) public pure returns (bytes32) {
@@ -301,10 +357,10 @@ contract MemoConduit is ReentrancyGuard {
         revert BridgeProtocolNotSupported(protocol);
     }
 
-    function bridgeTokenManagerOf(uint8 protocol) public pure returns (address) {
-        if (protocol == CCTP_V2_USDC) return CCTP_TOKEN_MINTER;
-        if (protocol == CCTPX_EURC) return CCTPX_EURC_MANAGER;
-        if (protocol == CCTPX_CIRBTC) return CCTPX_CIRBTC_MANAGER;
+    function bridgeTokenManagerOf(uint8 protocol) public view returns (address) {
+        if (protocol == CCTP_V2_USDC) return CCTP_TOKEN_MINTER();
+        if (protocol == CCTPX_EURC) return CCTPX_EURC_MANAGER();
+        if (protocol == CCTPX_CIRBTC) return CCTPX_CIRBTC_MANAGER();
         revert BridgeProtocolNotSupported(protocol);
     }
 
@@ -315,7 +371,7 @@ contract MemoConduit is ReentrancyGuard {
                 block.chainid,
                 address(this),
                 payment.protocol,
-                payment.protocol == CCTP_V2_USDC ? CCTP_TOKEN_MESSENGER : CCTPX_SERVICE,
+                payment.protocol == CCTP_V2_USDC ? CCTP_TOKEN_MESSENGER() : CCTPX_SERVICE(),
                 payment.token,
                 payment.from,
                 payment.recipient,
@@ -361,12 +417,12 @@ contract MemoConduit is ReentrancyGuard {
         ) revert BridgeQuoteMismatch();
         _validateBridgePayer(payment);
 
-        IMemoCctpTokenMessengerV2 messenger = IMemoCctpTokenMessengerV2(CCTP_TOKEN_MESSENGER);
+        IMemoCctpTokenMessengerV2 messenger = IMemoCctpTokenMessengerV2(CCTP_TOKEN_MESSENGER());
         if (
-            CCTP_TOKEN_MESSENGER.code.length == 0 || CCTP_TOKEN_MINTER.code.length == 0
-                || messenger.localMinter() != CCTP_TOKEN_MINTER
-                || messenger.remoteTokenMessengers(domain) != bytes32(uint256(uint160(CCTP_TOKEN_MESSENGER)))
-                || IMemoCctpTokenMinterV2(CCTP_TOKEN_MINTER).burnLimitsPerMessage(payment.token) < payment.amount
+            CCTP_TOKEN_MESSENGER().code.length == 0 || CCTP_TOKEN_MINTER().code.length == 0
+                || messenger.localMinter() != CCTP_TOKEN_MINTER()
+                || messenger.remoteTokenMessengers(domain) != bytes32(uint256(uint160(CCTP_TOKEN_MESSENGER())))
+                || IMemoCctpTokenMinterV2(CCTP_TOKEN_MINTER()).burnLimitsPerMessage(payment.token) < payment.amount
         ) revert BridgeDependencyMismatch();
 
         bytes32 nonce = bridgePaymentNonceOf(payment);
@@ -390,7 +446,7 @@ contract MemoConduit is ReentrancyGuard {
                 || token.balanceOf(payment.from) != treasuryBefore - payment.amount
         ) revert BridgeDebitMismatch();
 
-        token.forceApprove(CCTP_TOKEN_MESSENGER, payment.amount);
+        token.forceApprove(CCTP_TOKEN_MESSENGER(), payment.amount);
         messenger.depositForBurn(
             payment.amount,
             domain,
@@ -400,7 +456,7 @@ contract MemoConduit is ReentrancyGuard {
             0,
             CCTP_STANDARD_FINALITY
         );
-        token.forceApprove(CCTP_TOKEN_MESSENGER, 0);
+        token.forceApprove(CCTP_TOKEN_MESSENGER(), 0);
         if (
             token.balanceOf(address(this)) != balanceBefore || token.totalSupply() != supplyBefore - payment.amount
                 || token.balanceOf(payment.from) != treasuryBefore - payment.amount
@@ -439,13 +495,13 @@ contract MemoConduit is ReentrancyGuard {
         _validateBridgePayer(payment);
 
         address managerAddress = bridgeTokenManagerOf(payment.protocol);
-        IMemoCrossChainTokenService service = IMemoCrossChainTokenService(CCTPX_SERVICE);
+        IMemoCrossChainTokenService service = IMemoCrossChainTokenService(CCTPX_SERVICE());
         IMemoCctpXTokenManager manager = IMemoCctpXTokenManager(managerAddress);
         if (
-            CCTPX_SERVICE.code.length == 0 || managerAddress.code.length == 0 || service.paused()
+            CCTPX_SERVICE().code.length == 0 || managerAddress.code.length == 0 || service.paused()
                 || !service.isTrustedDomain(domain) || service.resolveTokenManager(payment.tokenId) != managerAddress
                 || manager.tokenManagerType() != 1 || manager.token() != payment.token
-                || manager.service() != CCTPX_SERVICE
+                || manager.service() != CCTPX_SERVICE()
         ) revert BridgeDependencyMismatch();
         _validateNativeQuote(service.feeService(), payment, signedQuote);
 
@@ -557,6 +613,27 @@ contract MemoConduit is ReentrancyGuard {
             payment.destinationToken,
             payment.memo
         );
+    }
+
+    /// @dev Routes never cross environments: a mainnet source only resolves mainnet
+    /// destinations and a testnet source only testnet ones.
+    function _asset(uint8 protocol, uint256 chainId) private view returns (address token, uint32 domain) {
+        if (isMainnetChain(block.chainid)) return _mainnetAsset(protocol, chainId);
+        if (isTestnetChain(block.chainid)) return _testnetAsset(protocol, chainId);
+        if (protocol < CCTP_V2_USDC || protocol > CCTPX_CIRBTC) revert BridgeProtocolNotSupported(protocol);
+        return (address(0), 0);
+    }
+
+    /// @dev Mainnet: CCTP V2 USDC only (Arc 5042 domain 26 <-> Avalanche 43114 domain 1),
+    /// remoteTokenMessengers verified both ways on 2026-10-16. Mainnet CCTPx is not routed.
+    function _mainnetAsset(uint8 protocol, uint256 chainId) private pure returns (address token, uint32 domain) {
+        if (protocol == CCTP_V2_USDC) {
+            if (chainId == 5042) return (0x3600000000000000000000000000000000000000, 26);
+            if (chainId == 43114) return (0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E, 1);
+            return (address(0), 0);
+        }
+        if (protocol == CCTPX_EURC || protocol == CCTPX_CIRBTC) return (address(0), 0);
+        revert BridgeProtocolNotSupported(protocol);
     }
 
     function _testnetAsset(uint8 protocol, uint256 chainId) private pure returns (address token, uint32 domain) {
