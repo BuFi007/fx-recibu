@@ -60,6 +60,25 @@ M6 (BUFICreditVault over the deployed Morpho **Vault V2** factory `0x6b7F638B…
 deploy-time instantiation of an external factory — scripted in `Deploy` notes, allocated
 across the canonical fx-Telaraña + fx-Recibú markets; no new protocol contract.
 
+## Mainnet deployments (Arc 5042, 2026-10-16)
+
+Admin: Safe [`0x47Dc7D18A6E3a79F696714E7D47456a49B430D09`](https://arcscan.app/address/0x47Dc7D18A6E3a79F696714E7D47456a49B430D09). The deployer `0x09Ce8E2B3Fede2727dA4392Ea8Fe618305ba0474` holds no roles. Record: `deployments/arc-mainnet.json`; broadcast: `broadcast/DeployFxRecibuHubMainnet.s.sol/5042/run-latest.json`.
+
+| Contract | Address | Deploy tx | Block |
+|---|---|---|---|
+| BUFIIdentityRegistry | [`0xe3D6De22135BBd463c0a97A5196782CBCC3f3322`](https://arcscan.app/address/0xe3D6De22135BBd463c0a97A5196782CBCC3f3322) | [`0x6a4775e8…`](https://arcscan.app/tx/0x6a4775e8ad53955bc40c14b5cbc1cc3b2e4f1993d4e3650b1330285ae7896e99) | 26311656 |
+| BUFIReputationRegistry | [`0x30015db351747e39102da3F65f51CE0207052415`](https://arcscan.app/address/0x30015db351747e39102da3F65f51CE0207052415) | [`0x75f52147…`](https://arcscan.app/tx/0x75f52147681d748639f0ec7e349c3cefce91184319878d8ede9c50f351ccfd8e) | 26311661 |
+| WorkspaceTierRegistry | [`0xfe06281b464d53f00cceca504114263C689e56fe`](https://arcscan.app/address/0xfe06281b464d53f00cceca504114263C689e56fe) | [`0x93d96eab…`](https://arcscan.app/tx/0x93d96eab9533d5478bf835f97f53fa31cb0c9407b786c5a377200a064877f6e4) | 26311668 |
+| InvoiceShelf | [`0x8d3006f7be5b5e6e5B7709889a2E5d9EE4d3Cd0a`](https://arcscan.app/address/0x8d3006f7be5b5e6e5B7709889a2E5d9EE4d3Cd0a) | [`0xdef7b9bf…`](https://arcscan.app/tx/0xdef7b9bf1b5660d1bc51b7b6a97e26f668e621ff08917a9f1f3b671df173cde2) | 26311673 |
+| MultiTokenReceivableEscrow | [`0xbb4b6BbdaEb3136571d33742385a1Ae59cEE57AB`](https://arcscan.app/address/0xbb4b6BbdaEb3136571d33742385a1Ae59cEE57AB) | [`0xa9120435…`](https://arcscan.app/tx/0xa91204359948a04a9a137da54df2b5c199b7602a1e85ea4e0062df00fe19b0ea) | 26311675 |
+| RecibuMemoRouter | [`0x208FBDf4268C87c475189d9EcD7D59b4766E75cB`](https://arcscan.app/address/0x208FBDf4268C87c475189d9EcD7D59b4766E75cB) | [`0x55c44824…`](https://arcscan.app/tx/0x55c4482423368e8b70e1c5ab195ad118ee5d465b728583b3b3aca339db271db3) | 26311679 |
+
+WorkspaceTierRegistry is immutable (no admin). InvoiceShelf: `MIDNIGHT_MODE=true`, `crossChainBuffer=21600`.
+
+Safe wiring batch executed ([`0x4fb1ca1c…`](https://arcscan.app/tx/0x4fb1ca1cd062105f4b7cd09b91b61aaabf7fc0a04f9aaffe8f732094fd44900e)) and verified on-chain: router `tokenConfig(USDC) = (true, 3)`; `shelf.escrow` = the escrow; escrow `ROUTER_ROLE` → router; reputation `SETTLEMENT_ROLE` → shelf.
+
+**Status: DATA-ONLY.** Unassigned: escrow `SETTLEMENT`/`ARBITER`, shelf `SERVICER`/`ADVANCE`/`OPS`, identity `ISSUER`, reputation `ATTESTOR`. No funds can be released or settled until the Safe grants them.
+
 ## The three invariants that make it safe (SPEC §4.9)
 
 1. **`L(w)` moves only on realized repayment** — a compromised scorer can misprice, never

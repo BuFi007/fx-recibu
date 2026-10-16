@@ -52,7 +52,7 @@ contract OracleAndReserveTest is Test {
         identity = new BUFIIdentityRegistry(admin);
         reputation = new BUFIReputationRegistry(admin, identity);
         tiers = new WorkspaceTierRegistry(identity, reputation);
-        shelf = new InvoiceShelf(usdc, identity, reputation, tiers, admin);
+        shelf = new InvoiceShelf(usdc, identity, reputation, tiers, admin, false);
         reserve = new WorkspaceOperatingReserve(usdc, admin);
         oracleC = new BUFIOracle(shelf, 2, admin);
 
@@ -164,7 +164,7 @@ contract OracleAndReserveTest is Test {
         // (velocity/caps sized fine: face 500 → loss 175 is ~0.09%; instead trip by
         //  simulating many defaults is slow — use a fresh thin tranche instead)
         // Simplest honest path: new shelf with tiny junior so one default is >10%.
-        InvoiceShelf shelf2 = new InvoiceShelf(usdc, identity, reputation, tiers, admin);
+        InvoiceShelf shelf2 = new InvoiceShelf(usdc, identity, reputation, tiers, admin, false);
         vm.startPrank(admin);
         shelf2.grantRole(shelf2.SERVICER_ROLE(), servicer);
         reputation.grantRole(reputation.SETTLEMENT_ROLE(), address(shelf2));
@@ -209,7 +209,7 @@ contract OracleAndReserveTest is Test {
     }
 
     function test_nav_revertsOnEmptyTranche() public {
-        InvoiceShelf shelf3 = new InvoiceShelf(usdc, identity, reputation, tiers, admin);
+        InvoiceShelf shelf3 = new InvoiceShelf(usdc, identity, reputation, tiers, admin, false);
         BUFIOracle o3 = new BUFIOracle(shelf3, 1, admin);
         vm.expectRevert(BUFIOracle.EmptyTranche.selector);
         o3.price();

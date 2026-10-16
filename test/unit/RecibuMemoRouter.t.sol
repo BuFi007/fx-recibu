@@ -9,7 +9,7 @@ import {InvoiceShelf} from "../../src/invoice/InvoiceShelf.sol";
 import {BINV} from "../../src/invoice/BINV.sol";
 import {ReceivableCommitment} from "../../src/libraries/ReceivableCommitment.sol";
 import {FactoringEvidenceV1} from "../../src/libraries/FactoringEvidenceV1.sol";
-import {ReceivableEscrow} from "../../src/rails/ReceivableEscrow.sol";
+import {MultiTokenReceivableEscrow} from "../../src/rails/MultiTokenReceivableEscrow.sol";
 import {RecibuMemoRouter} from "../../src/rails/RecibuMemoRouter.sol";
 import {IInvoiceShelf} from "../../src/interfaces/IInvoiceShelf.sol";
 import {MockUSDC3009} from "../mocks/MockUSDC3009.sol";
@@ -33,10 +33,7 @@ contract RecibuMemoRouterTest is Test {
     InvoiceShelf internal shelf;
     RecibuMemoRouter internal router;
 
-    ReceivableEscrow internal escrowU;
-    ReceivableEscrow internal escrowE;
-    ReceivableEscrow internal escrowP;
-    ReceivableEscrow internal escrowB;
+    MultiTokenReceivableEscrow internal escrow;
 
     address internal admin = makeAddr("admin");
     address internal issuer = makeAddr("issuer");
@@ -64,27 +61,25 @@ contract RecibuMemoRouterTest is Test {
         identity = new BUFIIdentityRegistry(admin);
         reputation = new BUFIReputationRegistry(admin, identity);
         tiers = new WorkspaceTierRegistry(identity, reputation);
-        shelf = new InvoiceShelf(usdc, identity, reputation, tiers, admin);
+        shelf = new InvoiceShelf(usdc, identity, reputation, tiers, admin, false);
 
-        router = new RecibuMemoRouter(IInvoiceShelf(address(shelf)), admin);
-        escrowU = new ReceivableEscrow(usdc, admin);
-        escrowE = new ReceivableEscrow(eurc, admin);
-        escrowP = new ReceivableEscrow(plain, admin);
-        escrowB = new ReceivableEscrow(big, admin);
+        escrow = new MultiTokenReceivableEscrow(admin);
+        router = new RecibuMemoRouter(IInvoiceShelf(address(shelf)), escrow, admin);
 
         vm.startPrank(admin);
         identity.grantRole(identity.ISSUER_ROLE(), issuer);
         reputation.grantRole(reputation.ATTESTOR_ROLE(), attestor);
         reputation.grantRole(reputation.SETTLEMENT_ROLE(), address(shelf));
         shelf.grantRole(shelf.SERVICER_ROLE(), servicer);
-        escrowU.grantRole(escrowU.ROUTER_ROLE(), address(router));
-        escrowE.grantRole(escrowE.ROUTER_ROLE(), address(router));
-        escrowP.grantRole(escrowP.ROUTER_ROLE(), address(router));
-        escrowB.grantRole(escrowB.ROUTER_ROLE(), address(router));
-        router.setToken(address(usdc), true, router.CAP_3009(), escrowU);
-        router.setToken(address(eurc), true, router.CAP_PERMIT(), escrowE);
-        router.setToken(address(plain), true, 0, escrowP);
-        router.setToken(address(big), true, 0, escrowB);
+        escrow.grantRole(escrow.ROUTER_ROLE(), address(router));
+        escrow.setToken(address(usdc), true);
+        escrow.setToken(address(eurc), true);
+        escrow.setToken(address(plain), true);
+        escrow.setToken(address(big), true);
+        router.setToken(address(usdc), true, router.CAP_3009());
+        router.setToken(address(eurc), true, router.CAP_PERMIT());
+        router.setToken(address(plain), true, 0);
+        router.setToken(address(big), true, 0);
         vm.stopPrank();
 
         seller = _ws("seller", makeAddr("sellerOwner"), 74, 74);
@@ -132,8 +127,8 @@ contract RecibuMemoRouterTest is Test {
             address(usdc), payer, invId, 0, amount, 0, block.timestamp + 1 hours, NONCE, v, r, s
         );
 
-        assertEq(escrowU.escrowedOf(invId), amount);
-        assertEq(usdc.balanceOf(address(escrowU)), amount);
+        assertEq(escrow.escrowedOf(invId), amount);
+        assertEq(usdc.balanceOf(address(escrow)), amount);
         assertEq(usdc.balanceOf(payer), 1_000_000e6 - amount);
         assertEq(usdc.allowance(payer, address(router)), 0); // never approved
         assertTrue(usdc.authorizationState(payer, NONCE));
@@ -183,8 +178,8 @@ contract RecibuMemoRouterTest is Test {
         vm.prank(relayer);
         router.payWithPermit(address(eurc), payer, invId, 0, amount, deadline, v, r, s);
 
-        assertEq(escrowE.escrowedOf(invId), amount);
-        assertEq(eurc.balanceOf(address(escrowE)), amount);
+        assertEq(escrow.escrowedOf(invId), amount);
+        assertEq(eurc.balanceOf(address(escrow)), amount);
         assertEq(eurc.balanceOf(payer), 1_000_000e6 - amount);
     }
 
@@ -196,7 +191,7 @@ contract RecibuMemoRouterTest is Test {
         plain.approve(address(router), amount);
         router.pay(address(plain), invId, 0, amount);
         vm.stopPrank();
-        assertEq(escrowP.escrowedOf(invId), amount);
+        assertEq(escrow.escrowedOf(invId), amount);
     }
 
     function test_pay_nonSixDecimalToken() public {
@@ -205,7 +200,7 @@ contract RecibuMemoRouterTest is Test {
         big.approve(address(router), amount);
         router.pay(address(big), invId, 0, amount);
         vm.stopPrank();
-        assertEq(escrowB.escrowedOf(invId), amount);
+        assertEq(escrow.escrowedOf(invId), amount);
     }
 
     function test_pay_unregisteredTokenReverts() public {
@@ -227,14 +222,29 @@ contract RecibuMemoRouterTest is Test {
         router.pay(address(plain), invId, 0, 0);
     }
 
-    function test_setToken_escrowMismatchReverts() public {
-        // escrowE is a EURC escrow; registering it for `usdc` must revert.
+    function test_setToken_escrowUnsupportedReverts() public {
+        address other = makeAddr("otherToken");
         uint8 cap = router.CAP_3009();
         vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(RecibuMemoRouter.EscrowTokenUnsupported.selector, other));
+        router.setToken(other, true, cap);
+    }
+
+    function test_escrow_invoiceBoundToOneToken() public {
+        uint256 amount = 10e6;
+        plain.mint(address(this), amount * 2);
+        plain.approve(address(router), amount);
+        router.pay(address(plain), invId, 0, amount);
+        assertEq(escrow.tokenOf(invId), address(plain));
+        big.mint(address(this), amount);
+        big.approve(address(router), amount);
         vm.expectRevert(
-            abi.encodeWithSelector(RecibuMemoRouter.EscrowTokenMismatch.selector, address(usdc), address(eurc))
+            abi.encodeWithSelector(
+                MultiTokenReceivableEscrow.InvoiceTokenMismatch.selector, invId, address(plain), address(big)
+            )
         );
-        router.setToken(address(usdc), true, cap, escrowE);
+        router.pay(address(big), invId, 1, amount);
+        assertEq(escrow.totalEscrowedOf(address(plain)), amount);
     }
 
     function test_memoIdParity() public view {

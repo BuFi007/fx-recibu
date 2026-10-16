@@ -8,7 +8,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IInvoiceShelf} from "../interfaces/IInvoiceShelf.sol";
 import {IERC3009} from "../interfaces/IERC3009.sol";
 import {IERC2612} from "../interfaces/IERC2612.sol";
-import {ReceivableEscrow} from "./ReceivableEscrow.sol";
+import {MultiTokenReceivableEscrow} from "./MultiTokenReceivableEscrow.sol";
 
 /// @title RecibuMemoRouter — multi-currency, gasless, one-signed-action memo settlement front door.
 ///
@@ -37,10 +37,11 @@ contract RecibuMemoRouter is AccessControl, ReentrancyGuard {
     struct TokenConfig {
         bool allowed;
         uint8 caps; // CAP_3009 | CAP_PERMIT
-        ReceivableEscrow escrow; // per-token escrow (escrow.USDC() == token)
     }
 
     IInvoiceShelf public immutable SHELF;
+    /// @notice one multi-token escrow for every settlement token (no per-token escrows).
+    MultiTokenReceivableEscrow public immutable ESCROW;
     mapping(address => TokenConfig) public tokenConfig;
 
     event RecibuPayment(
@@ -51,16 +52,19 @@ contract RecibuMemoRouter is AccessControl, ReentrancyGuard {
         uint256 amount,
         address from
     );
-    event TokenConfigured(address indexed token, bool allowed, uint8 caps, address escrow);
+    event TokenConfigured(address indexed token, bool allowed, uint8 caps);
 
     error ZeroAmount();
     error InvoiceNotFunded(uint256 invoiceId);
     error TokenNotAllowed(address token);
     error CapabilityMissing(address token, uint8 required);
-    error EscrowTokenMismatch(address token, address escrowToken);
+    error EscrowTokenUnsupported(address token);
+    error ZeroAddress();
 
-    constructor(IInvoiceShelf shelf, address admin) {
+    constructor(IInvoiceShelf shelf, MultiTokenReceivableEscrow escrow, address admin) {
+        if (address(shelf) == address(0) || address(escrow) == address(0) || admin == address(0)) revert ZeroAddress();
         SHELF = shelf;
+        ESCROW = escrow;
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
 
@@ -74,15 +78,10 @@ contract RecibuMemoRouter is AccessControl, ReentrancyGuard {
 
     /// @notice enable/disable a settlement token + its per-token escrow + capabilities.
     ///         The escrow MUST be deployed for `token` (single-token invariant).
-    function setToken(address token, bool allowed, uint8 caps, ReceivableEscrow escrow)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        if (allowed && address(escrow.USDC()) != token) {
-            revert EscrowTokenMismatch(token, address(escrow.USDC()));
-        }
-        tokenConfig[token] = TokenConfig(allowed, caps, escrow);
-        emit TokenConfigured(token, allowed, caps, address(escrow));
+    function setToken(address token, bool allowed, uint8 caps) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (allowed && !ESCROW.supportedToken(token)) revert EscrowTokenUnsupported(token);
+        tokenConfig[token] = TokenConfig(allowed, caps);
+        emit TokenConfigured(token, allowed, caps);
     }
 
     // ── pay: three entrypoints, one downstream ───────────────────────────────
@@ -157,8 +156,8 @@ contract RecibuMemoRouter is AccessControl, ReentrancyGuard {
         uint256 amount,
         address from
     ) internal {
-        IERC20(token).forceApprove(address(cfg.escrow), amount);
-        cfg.escrow.deposit(invoiceId, amount, address(this));
+        IERC20(token).forceApprove(address(ESCROW), amount);
+        ESCROW.deposit(invoiceId, token, amount, address(this));
         emit RecibuPayment(invoiceId, installment, memoIdOf(invoiceId, installment), token, amount, from);
     }
 }

@@ -1,0 +1,71 @@
+{
+  "chainId": 5042,
+  "network": "arc-mainnet",
+  "deployedAt": "2026-10-16",
+  "deployer": "0x09Ce8E2B3Fede2727dA4392Ea8Fe618305ba0474",
+  "deployerRoles": "none",
+  "admin": "0x47Dc7D18A6E3a79F696714E7D47456a49B430D09",
+  "adminType": "Safe",
+  "usdc": "0x3600000000000000000000000000000000000000",
+  "contracts": {
+    "BUFIIdentityRegistry": {
+      "address": "0xe3D6De22135BBd463c0a97A5196782CBCC3f3322",
+      "deployTx": "0x6a4775e8ad53955bc40c14b5cbc1cc3b2e4f1993d4e3650b1330285ae7896e99",
+      "block": 26311656,
+      "gasUsed": 709906
+    },
+    "BUFIReputationRegistry": {
+      "address": "0x30015db351747e39102da3F65f51CE0207052415",
+      "deployTx": "0x75f52147681d748639f0ec7e349c3cefce91184319878d8ede9c50f351ccfd8e",
+      "block": 26311661,
+      "gasUsed": 807256
+    },
+    "WorkspaceTierRegistry": {
+      "address": "0xfe06281b464d53f00cceca504114263C689e56fe",
+      "deployTx": "0x93d96eab9533d5478bf835f97f53fa31cb0c9407b786c5a377200a064877f6e4",
+      "block": 26311668,
+      "gasUsed": 526818,
+      "admin": "none (immutable)"
+    },
+    "InvoiceShelf": {
+      "address": "0x8d3006f7be5b5e6e5B7709889a2E5d9EE4d3Cd0a",
+      "deployTx": "0xdef7b9bf1b5660d1bc51b7b6a97e26f668e621ff08917a9f1f3b671df173cde2",
+      "block": 26311673,
+      "gasUsed": 5018193,
+      "config": {
+        "MIDNIGHT_MODE": true,
+        "crossChainBuffer": 21600
+      }
+    },
+    "MultiTokenReceivableEscrow": {
+      "address": "0xbb4b6BbdaEb3136571d33742385a1Ae59cEE57AB",
+      "deployTx": "0xa91204359948a04a9a137da54df2b5c199b7602a1e85ea4e0062df00fe19b0ea",
+      "block": 26311675,
+      "gasUsed": 893351
+    },
+    "RecibuMemoRouter": {
+      "address": "0x208FBDf4268C87c475189d9EcD7D59b4766E75cB",
+      "deployTx": "0x55c4482423368e8b70e1c5ab195ad118ee5d465b728583b3b3aca339db271db3",
+      "block": 26311679,
+      "gasUsed": 1008023
+    }
+  },
+  "safeWiring": {
+    "tx": "0x4fb1ca1cd062105f4b7cd09b91b61aaabf7fc0a04f9aaffe8f732094fd44900e",
+    "status": "executed, verified on-chain",
+    "checks": [
+      "router.tokenConfig(USDC) = (true, 3)",
+      "shelf.escrow = MultiTokenReceivableEscrow",
+      "escrow ROUTER_ROLE held by RecibuMemoRouter",
+      "reputation SETTLEMENT_ROLE held by InvoiceShelf"
+    ]
+  },
+  "mode": "DATA-ONLY",
+  "unassignedRoles": [
+    "MultiTokenReceivableEscrow: SETTLEMENT_ROLE, ARBITER_ROLE",
+    "InvoiceShelf: SERVICER, ADVANCE, OPS",
+    "BUFIIdentityRegistry: ISSUER_ROLE",
+    "BUFIReputationRegistry: ATTESTOR_ROLE"
+  ],
+  "broadcast": "broadcast/DeployFxRecibuHubMainnet.s.sol/5042/run-latest.json"
+}

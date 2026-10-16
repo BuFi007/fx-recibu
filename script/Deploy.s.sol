@@ -88,7 +88,7 @@ contract Deploy is Script {
         );
         // ── invoice core (M3) ──
         d.shelf = new InvoiceShelf(
-            usdc, IBUFIIdentityRegistry(address(d.identity)), IBUFIReputationRegistry(address(d.reputation)), d.tiers, boot
+            usdc, IBUFIIdentityRegistry(address(d.identity)), IBUFIReputationRegistry(address(d.reputation)), d.tiers, boot, false
         );
         d.oracleA = new BUFIOracle(d.shelf, 0, boot);
         d.oracleB = new BUFIOracle(d.shelf, 1, boot);
