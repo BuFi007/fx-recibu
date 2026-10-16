@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.26;
 
+import {MemoConduitCctpConfig} from "../src/rails/MemoConduitCctpConfig.sol";
 import {Script, console2} from "forge-std/Script.sol";
 import {MemoConduit, IAddressBook} from "../src/rails/MemoConduit.sol";
 
@@ -60,7 +61,7 @@ contract DeployMemoConduitTestnets is Script {
     }
 
     function initCodeFor(uint256 chainId) public pure returns (bytes memory) {
-        return abi.encodePacked(type(MemoConduit).creationCode, abi.encode(IAddressBook(ADDRESS_BOOK), tokensFor(chainId)));
+        return abi.encodePacked(type(MemoConduit).creationCode, abi.encode(IAddressBook(ADDRESS_BOOK), tokensFor(chainId), MemoConduitCctpConfig.none()));
     }
 
     function predict(uint256 chainId) public pure returns (address) {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.26;
 
+import {MemoConduitCctpConfig, CctpConfig} from "../../src/rails/MemoConduitCctpConfig.sol";
 import {Test} from "forge-std/Test.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
@@ -179,7 +180,7 @@ contract MemoConduitCctpTest is Test {
         treasury = new BridgeQuorumMock(vm.addr(KEY_ONE), vm.addr(KEY_TWO));
         address[] memory tokens = new address[](1);
         tokens[0] = SOURCE_TOKEN;
-        conduit = new MemoConduit(IAddressBook(address(book)), tokens);
+        conduit = new MemoConduit(IAddressBook(address(book)), tokens, MemoConduitCctpConfig.testnet());
         recipient = makeAddr("invoice destination");
         address[] memory recipients = new address[](1);
         recipients[0] = recipient;
@@ -265,6 +266,28 @@ contract MemoConduitCctpTest is Test {
         assertEq(messenger.lastFinality(), 2000);
         // Source burn is not final payment: recipient has not received any token here.
         assertEq(token.balanceOf(recipient), 0);
+    }
+
+    function test_repaymentInitiatedEmittedForSpokeToHubAccounting() public {
+        MemoConduit.BridgePayment memory p = payment();
+        bytes32 nonce = conduit.bridgePaymentNonceOf(p);
+        vm.expectEmit(true, true, true, true, address(conduit));
+        emit MemoConduit.RepaymentInitiated(
+            p.paymentId, p.termsHash, p.memoId, p.from, p.recipient, AMOUNT, 26, nonce, conduit.CCTP_MESSAGE_TRANSMITTER()
+        );
+        conduit.bridgeWithMemo(p, sign(p));
+        assertEq(conduit.CCTP_MESSAGE_TRANSMITTER(), 0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275);
+    }
+
+    function test_constructorRejectsHalfConfiguredCctp() public {
+        address[] memory t = new address[](1);
+        t[0] = SOURCE_TOKEN;
+        CctpConfig memory c = MemoConduitCctpConfig.testnet();
+        c.tokenMinter = address(0);
+        vm.expectRevert(MemoConduit.ZeroAddress.selector);
+        new MemoConduit(IAddressBook(address(book)), t, c);
+        MemoConduit off = new MemoConduit(IAddressBook(address(book)), t, MemoConduitCctpConfig.none());
+        assertEq(off.CCTP_TOKEN_MESSENGER(), address(0));
     }
 
     function test_notAllowlistedAndRevokedRecipientFailBeforeDebit() public {
@@ -509,7 +532,7 @@ contract MemoConduitCctpTest is Test {
         bytes32 nonce = conduit.bridgePaymentNonceOf(p);
         address[] memory tokens = new address[](1);
         tokens[0] = SOURCE_TOKEN;
-        MemoConduit other = new MemoConduit(IAddressBook(address(book)), tokens);
+        MemoConduit other = new MemoConduit(IAddressBook(address(book)), tokens, MemoConduitCctpConfig.testnet());
         assertNotEq(other.bridgePaymentNonceOf(p), nonce);
         vm.chainId(43113);
         assertNotEq(conduit.bridgePaymentNonceOf(p), nonce);
@@ -554,7 +577,7 @@ contract MemoConduitCctpTest is Test {
         address at = 0x1111111111111111111111111111111111111111;
         address[] memory tokens = new address[](1);
         tokens[0] = SOURCE_TOKEN;
-        deployCodeTo("MemoConduit.sol:MemoConduit", abi.encode(address(book), tokens), at);
+        deployCodeTo("MemoConduit.sol:MemoConduit", abi.encode(address(book), tokens, MemoConduitCctpConfig.testnet()), at);
         vm.chainId(43113);
         MemoConduit.BridgePayment memory p = payment();
         p.token = 0x5425890298aed601595a70AB815c96711a31Bc65;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.26;
 
+import {MemoConduitCctpConfig} from "../../src/rails/MemoConduitCctpConfig.sol";
 import {Test} from "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
@@ -261,7 +262,7 @@ contract MemoConduitCctpXTest is Test {
         treasury = new BridgeQuorumMock(vm.addr(KEY_ONE), vm.addr(KEY_TWO));
         address[] memory tokens = new address[](1);
         tokens[0] = tokenAddress;
-        conduit = new MemoConduit(IAddressBook(address(book)), tokens);
+        conduit = new MemoConduit(IAddressBook(address(book)), tokens, MemoConduitCctpConfig.testnet());
         recipient = makeAddr("foreign exact recipient");
         address[] memory recipients = new address[](1);
         recipients[0] = recipient;

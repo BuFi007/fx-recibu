@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.26;
 
+import {MemoConduitCctpConfig} from "../src/rails/MemoConduitCctpConfig.sol";
 import {Script, console2} from "forge-std/Script.sol";
 import {MemoConduit, IAddressBook} from "../src/rails/MemoConduit.sol";
 
-/// @title DeployMemoConduitCctpMainnet — the CCTP-capable MemoConduit on MAINNET.
-/// @notice Allowlist: ARC 5042 (CCTP domain 26) and AVALANCHE C-Chain 43114 (CCTP domain 1).
-///         Every other chain reverts. The testnet script and its guard are untouched.
+/// @title DeployMemoConduitCctpMainnet — the CCTP MemoConduit on the Avalanche SPOKE.
+/// @notice Hub-and-spoke: Arc 5042 is the hub (Midnight, escrow; see the hub script in the
+///         router PR), Avalanche C-Chain 43114 (CCTP domain 1) is the ONLY chain allowed here.
+///         Its only mainnet bridge route is the repayment to the hub (Arc, domain 26). CCTP
+///         dependencies are passed to the constructor (MemoConduitCctpConfig.mainnet()).
 ///
 ///         Token set per chain = native Circle USDC + EURC (developers.circle.com
 ///         stablecoins/*-contract-addresses, `cast code` verified 2026-10-16). USDC is
-///         bridgeable through CCTP V2 (Arc <-> Avalanche); EURC is local-memo only on mainnet
+///         bridgeable through CCTP V2 (Avalanche -> Arc only); EURC is local-memo only on mainnet
 ///         because MemoConduit configures no mainnet CCTPx manager (fails closed).
 ///
 ///         A NEW salt, keccak256("bufi.memo-conduit.cctp.mainnet.v1"), so this never collides
@@ -36,9 +39,7 @@ contract DeployMemoConduitCctpMainnet is Script {
 
     function tokensFor(uint256 chainId) public pure returns (address[] memory t) {
         t = new address[](2);
-        if (chainId == 5042) {
-            (t[0], t[1]) = (USDC_ARC, EURC_ARC);
-        } else if (chainId == 43114) {
+        if (chainId == 43114) {
             (t[0], t[1]) = (USDC_AVAX, EURC_AVAX);
         } else {
             revert ChainNotAllowed(chainId);
@@ -46,8 +47,10 @@ contract DeployMemoConduitCctpMainnet is Script {
     }
 
     function initCodeFor(uint256 chainId) public pure returns (bytes memory) {
-        return
-            abi.encodePacked(type(MemoConduit).creationCode, abi.encode(IAddressBook(ADDRESS_BOOK), tokensFor(chainId)));
+        return abi.encodePacked(
+            type(MemoConduit).creationCode,
+            abi.encode(IAddressBook(ADDRESS_BOOK), tokensFor(chainId), MemoConduitCctpConfig.mainnet())
+        );
     }
 
     function predict(uint256 chainId) public pure returns (address) {
