@@ -68,7 +68,7 @@ contract GuardHookTest is Test {
         identity = new BUFIIdentityRegistry(admin);
         reputation = new BUFIReputationRegistry(admin, identity);
         tiers = new WorkspaceTierRegistry(identity, reputation);
-        shelf = new InvoiceShelf(usdc, identity, reputation, tiers, admin);
+        shelf = new InvoiceShelf(usdc, identity, reputation, tiers, admin, false);
         feed = new MockFeed();
         hook = new RecibuSettlementGuardHook(
             poolManager, IInvoiceShelf(address(shelf)), escrow, settlement, IRecibuPriceFeed(address(feed)), admin

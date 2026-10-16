@@ -57,7 +57,7 @@ contract InvoiceShelfTest is Test {
         identity = new BUFIIdentityRegistry(admin);
         reputation = new BUFIReputationRegistry(admin, identity);
         tiers = new WorkspaceTierRegistry(identity, reputation);
-        shelf = new InvoiceShelf(usdc, identity, reputation, tiers, admin);
+        shelf = new InvoiceShelf(usdc, identity, reputation, tiers, admin, false);
 
         vm.startPrank(admin);
         identity.grantRole(identity.ISSUER_ROLE(), issuer);

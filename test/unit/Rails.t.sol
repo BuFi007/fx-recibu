@@ -58,7 +58,7 @@ contract RailsTest is Test {
         identity = new BUFIIdentityRegistry(admin);
         reputation = new BUFIReputationRegistry(admin, identity);
         tiers = new WorkspaceTierRegistry(identity, reputation);
-        shelf = new InvoiceShelf(usdc, identity, reputation, tiers, admin);
+        shelf = new InvoiceShelf(usdc, identity, reputation, tiers, admin, false);
         escrow = new ReceivableEscrow(usdc, admin);
         router = new InvoiceMemoRouter(usdc, IInvoiceShelf(address(shelf)), escrow);
         settlement = new InvoiceSettlement(usdc, IInvoiceShelf(address(shelf)), escrow, admin);

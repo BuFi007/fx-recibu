@@ -45,6 +45,34 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     bytes32 public constant SERVICER_ROLE = keccak256("SERVICER_ROLE");
     bytes32 public constant OPS_ROLE = keccak256("OPS_ROLE");
     bytes32 public constant SETTLEMENT_ROLE = keccak256("SETTLEMENT_ROLE");
+    /// @dev Midnight path: the BUFI advance router / repay adapter / keeper that binds and
+    ///      reports Morpho Midnight positions. Never granted to an EOA on mainnet.
+    bytes32 public constant ADVANCE_ROLE = keccak256("ADVANCE_ROLE");
+
+    /// @notice Midnight path (mainnet hub): the shelf is a RECEIVABLE REGISTRY only. LP capital,
+    ///         loss and liquidation live in Morpho Midnight; tranches are off, no cash moves
+    ///         through the shelf, and `USDC` is only the receivable's denomination (any token).
+    bool public immutable MIDNIGHT_MODE;
+
+    /// @dev One open Midnight advance per receivable (invoiceId <-> (account, marketId) 1:1).
+    struct Advance {
+        address account; // borrower CreditAccount (Midnight position owner)
+        bytes32 marketId; // Morpho Midnight market id
+        uint64 maturity; // market maturity
+        uint128 units; // debt units sold at origination
+        uint128 repaidUnits; // debt units reported repaid / liquidated
+    }
+
+    mapping(uint256 invoiceId => Advance) public advanceOf;
+
+    /// @notice Cross-chain settlement buffer (Safe-settable). A CCTP repayment from a spoke
+    ///         (Avalanche) is NOT atomic: while it is in flight Midnight still sees the debt
+    ///         open. Nothing is late/defaultable on BUFI's side before due + grace + buffer, and
+    ///         a bound Midnight market must mature after that point. Midnight's own liquidation
+    ///         is LLTV-based and ignores this buffer: it must also be priced into haircut/LTV.
+    uint32 public constant DEFAULT_CROSS_CHAIN_BUFFER = 6 hours;
+    uint32 public constant MAX_CROSS_CHAIN_BUFFER = 3 days;
+    uint32 public crossChainBuffer = DEFAULT_CROSS_CHAIN_BUFFER;
 
     enum Status {
         None,
@@ -142,6 +170,44 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     event WorkspaceFrozen(uint256 indexed agentId);
     event DefaultResolved(uint256 indexed invoiceId, bool fraud);
 
+    // ── Midnight accounting (plan §4.4 / §11.B): marketId is the Midnight bytes32 id,
+    //    `units` are Midnight debt units (1 unit = 1 loan token at maturity). ──
+    event AdvanceOriginated(
+        uint256 indexed invoiceId,
+        address indexed account,
+        bytes32 indexed marketId,
+        uint256 units,
+        uint256 assetsOut,
+        uint64 maturity,
+        uint16 haircutBps,
+        bytes32 scoreHash
+    );
+    event AdvanceRepaid(
+        uint256 indexed invoiceId, address indexed account, bytes32 indexed marketId, uint256 units, bytes32 memoId
+    );
+    event AdvanceLiquidated(
+        uint256 indexed invoiceId,
+        address indexed account,
+        bytes32 indexed marketId,
+        uint256 repaidUnits,
+        uint256 seizedAssets,
+        address collateralToken,
+        uint256 badDebt
+    );
+    event CrossChainBufferSet(uint32 previous, uint32 current);
+    /// @notice hub side of a spoke repayment: CCTP mint observed and applied (pairs with the
+    ///         spoke's MemoConduit RepaymentInitiated; accounting clears "pending in flight").
+    event RepaymentSettled(
+        uint256 indexed invoiceId,
+        bytes32 indexed marketId,
+        bytes32 indexed messageHash,
+        uint32 sourceDomain,
+        uint256 amount,
+        uint256 units,
+        bytes32 memoId
+    );
+    event AdvanceRolledToBlue(uint256 indexed invoiceId, address indexed account, bytes32 indexed blueMarketId);
+
     error NotEligible(uint256 agentId);
     error Frozen(uint256 agentId);
     error ExposureCapExceeded(uint256 agentId, uint256 requested, uint256 headroom);
@@ -165,22 +231,35 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     error ReceivableAlreadyConsumed(bytes32 commitment, uint256 originalInvoiceId);
     error AuthorityInvoiceAlreadyConsumed(bytes32 authorityInvoiceId, uint256 originalInvoiceId);
     error IncompleteFactoringEvidence();
+    error TranchesDisabled();
+    error MidnightOnly();
+    error AdvanceAlreadyBound(uint256 invoiceId);
+    error AdvanceNotBound(uint256 invoiceId);
+    error BadAdvance();
+    error MaturityBeforeDue(uint64 maturity, uint256 dueWithGrace);
+    error UnitsExceedOpen(uint256 units, uint256 open);
+    error BufferTooLarge(uint32 buffer);
 
     constructor(
         IERC20 usdc,
         IBUFIIdentityRegistry identity_,
         IBUFIReputationRegistry reputation_,
         WorkspaceTierRegistry tiers_,
-        address admin
+        address admin,
+        bool midnightMode
     ) {
+        if (admin == address(0)) revert BadAdvance();
+        MIDNIGHT_MODE = midnightMode;
         USDC = usdc;
         IDENTITY = identity_;
         REPUTATION = reputation_;
         TIERS = tiers_;
         BINV_TOKEN = new BINV(address(this));
-        _tranches[0] = new BIFTranche("BUFI Invoice Senior", "bIF-A", address(this));
-        _tranches[1] = new BIFTranche("BUFI Invoice Mezzanine", "bIF-B", address(this));
-        _tranches[2] = new BIFTranche("BUFI Invoice Junior", "bIF-C", address(this));
+        if (!midnightMode) {
+            _tranches[0] = new BIFTranche("BUFI Invoice Senior", "bIF-A", address(this));
+            _tranches[1] = new BIFTranche("BUFI Invoice Mezzanine", "bIF-B", address(this));
+            _tranches[2] = new BIFTranche("BUFI Invoice Junior", "bIF-C", address(this));
+        }
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
 
@@ -204,6 +283,7 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
     // ── LP side (M3: par deposits; BUFIOracle prices NAV = deposits − loss) ──
 
     function depositTranche(uint8 tranche, uint256 assets) external nonReentrant returns (uint256 shares) {
+        if (MIDNIGHT_MODE) revert TranchesDisabled();
         if (assets == 0) revert ZeroAmount();
         USDC.safeTransferFrom(msg.sender, address(this), assets);
         totalLiquid += assets;
@@ -301,7 +381,7 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         // capacity must subordinate this advance. Cash is funded from the SHARED pool;
         // the tranche tag decides who eats a loss first, not which wallet pays out.
         uint8 tranche = uint8(TIERS.trancheEligibility(sellerS.sellerScore, debtorS.debtorScore, pair));
-        if (totalLiquid < advance) revert InsufficientTrancheLiquidity(tranche);
+        if (!MIDNIGHT_MODE && totalLiquid < advance) revert InsufficientTrancheLiquidity(tranche);
 
         invoiceId = nextInvoiceId++;
         bytes32 documentBundleHash = ReceivableCommitment.hashDocumentBundle(docs);
@@ -334,11 +414,14 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
 
         outstandingOf[sellerAgentId] = current + advance;
         debtorOutstandingOf[sellerAgentId][debtorAgentId] += advance;
-        totalLiquid -= advance;
-        totalPrincipal += advance;
-
         BINV_TOKEN.mint(IDENTITY.ownerOf(sellerAgentId), invoiceId, docs);
-        USDC.safeTransfer(IDENTITY.ownerOf(sellerAgentId), advance);
+        if (!MIDNIGHT_MODE) {
+            // tranche path: cash out of the shared pool. Midnight path: `advance` is only the
+            // exposure cap (face x advanceRate); the cash comes from Midnight via bindAdvance.
+            totalLiquid -= advance;
+            totalPrincipal += advance;
+            USDC.safeTransfer(IDENTITY.ownerOf(sellerAgentId), advance);
+        }
         emit ReceivableCommitmentConsumed(commitment, invoiceId, documentBundleHash);
         emit AuthorityInvoiceIdConsumed(authorityInvoiceId, invoiceId);
         emit FactoringEvidenceBound(
@@ -368,11 +451,12 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         Invoice storage inv = invoices[invoiceId];
         if (inv.status != Status.Funded) revert BadStatus(invoiceId);
         if (amount == 0) revert ZeroAmount();
-        USDC.safeTransferFrom(payer, address(this), amount);
+        // Midnight path: record-only (cash goes escrow -> Midnight repay, never the shelf)
+        if (!MIDNIGHT_MODE) USDC.safeTransferFrom(payer, address(this), amount);
 
         uint8 idx = inv.paidInstallments;
         uint256 due = installmentDue(invoiceId, idx);
-        bool onTime = block.timestamp <= due + inv.grace;
+        bool onTime = block.timestamp <= lateAfter(invoiceId, due);
 
         // split: tranche recovery first (outstanding), then the seller's holdback slice.
         // anything beyond face is rejected — the debtor owes face, no more.
@@ -386,10 +470,12 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         inv.paidInstallments = idx + 1;
         if (toOutstanding > 0) {
             _reduceExposure(inv, toOutstanding);
-            totalPrincipal -= toOutstanding; // receivable repaid → back to fundable cash
-            totalLiquid += toOutstanding;
+            if (!MIDNIGHT_MODE) {
+                totalPrincipal -= toOutstanding; // receivable repaid → back to fundable cash
+                totalLiquid += toOutstanding;
+            }
         }
-        if (remainder > 0) totalHoldbackHeld += remainder; // seller's cash, held as liability
+        if (remainder > 0 && !MIDNIGHT_MODE) totalHoldbackHeld += remainder; // seller's cash, held as liability
 
         if (onTime) {
             // the ONLY input that raises L(w) — realized repayment (SPEC §4.9)
@@ -409,7 +495,7 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         Invoice storage inv = invoices[invoiceId];
         if (inv.status != Status.Funded) revert BadStatus(invoiceId);
         uint256 due = installmentDue(invoiceId, inv.paidInstallments);
-        if (block.timestamp <= due + inv.grace) revert NotPastGrace();
+        if (block.timestamp <= lateAfter(invoiceId, due)) revert NotPastGrace();
 
         // A debtor payment already deposited into escrow (via InvoiceMemoRouter.pay) has
         // NOT advanced the shelf — settlement applies it out-of-band (paidInstallments==0 is
@@ -424,6 +510,14 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         uint128 outstanding = inv.outstanding;
         inv.outstanding = 0;
         _reduceExposure(inv, outstanding);
+
+        if (MIDNIGHT_MODE) {
+            // loss is realized in Midnight (liquidation / lossFactor), not here
+            workspaceFrozen[inv.sellerAgentId] = true;
+            emit WorkspaceFrozen(inv.sellerAgentId);
+            emit InvoiceDefaulted(invoiceId, outstanding);
+            return;
+        }
 
         // the receivable is written off the pool; recovery below returns real cash to it
         totalPrincipal -= outstanding;
@@ -484,7 +578,106 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
         emit DefaultResolved(invoiceId, fraud);
     }
 
+    // ── Midnight binding + accounting (ADVANCE_ROLE: router / repay adapter / keeper) ──
+
+    /// @notice bind a Morpho Midnight advance to a funded receivable. One per invoice.
+    ///         The market must mature after the receivable's last due date plus grace.
+    function bindAdvance(
+        uint256 invoiceId,
+        address account,
+        bytes32 marketId,
+        uint64 maturity,
+        uint128 units,
+        uint256 assetsOut,
+        uint16 haircutBps,
+        bytes32 scoreHash
+    ) external onlyRole(ADVANCE_ROLE) {
+        if (!MIDNIGHT_MODE) revert MidnightOnly();
+        if (invoices[invoiceId].status != Status.Funded) revert BadStatus(invoiceId);
+        if (advanceOf[invoiceId].account != address(0)) revert AdvanceAlreadyBound(invoiceId);
+        if (account == address(0) || marketId == bytes32(0) || units == 0) revert BadAdvance();
+        uint256 dueWithGrace = lateAfter(invoiceId, dueDate(invoiceId));
+        if (maturity < dueWithGrace) revert MaturityBeforeDue(maturity, dueWithGrace);
+        advanceOf[invoiceId] = Advance(account, marketId, maturity, units, 0);
+        emit AdvanceOriginated(invoiceId, account, marketId, units, assetsOut, maturity, haircutBps, scoreHash);
+    }
+
+    function recordAdvanceRepaid(uint256 invoiceId, uint128 units, bytes32 memoId) external onlyRole(ADVANCE_ROLE) {
+        Advance storage a = _openAdvance(invoiceId, units);
+        a.repaidUnits += units;
+        emit AdvanceRepaid(invoiceId, a.account, a.marketId, units, memoId);
+    }
+
+    /// @notice a spoke (CCTP) repayment was minted on the hub and applied to Midnight.
+    function recordRepaymentSettled(
+        uint256 invoiceId,
+        uint128 units,
+        uint256 amount,
+        uint32 sourceDomain,
+        bytes32 messageHash,
+        bytes32 memoId
+    ) external onlyRole(ADVANCE_ROLE) {
+        if (messageHash == bytes32(0)) revert BadAdvance();
+        Advance storage a = _openAdvance(invoiceId, units);
+        a.repaidUnits += units;
+        emit RepaymentSettled(invoiceId, a.marketId, messageHash, sourceDomain, amount, units, memoId);
+        emit AdvanceRepaid(invoiceId, a.account, a.marketId, units, memoId);
+    }
+
+    function setCrossChainBuffer(uint32 buffer) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (buffer > MAX_CROSS_CHAIN_BUFFER) revert BufferTooLarge(buffer);
+        emit CrossChainBufferSet(crossChainBuffer, buffer);
+        crossChainBuffer = buffer;
+    }
+
+    function recordAdvanceLiquidated(
+        uint256 invoiceId,
+        uint128 repaidUnits,
+        uint256 seizedAssets,
+        address collateralToken,
+        uint256 badDebt
+    ) external onlyRole(ADVANCE_ROLE) {
+        Advance storage a = _openAdvance(invoiceId, repaidUnits);
+        a.repaidUnits += repaidUnits;
+        emit AdvanceLiquidated(invoiceId, a.account, a.marketId, repaidUnits, seizedAssets, collateralToken, badDebt);
+    }
+
+    function recordAdvanceRolledToBlue(uint256 invoiceId, bytes32 blueMarketId) external onlyRole(ADVANCE_ROLE) {
+        Advance storage a = advanceOf[invoiceId];
+        if (a.account == address(0)) revert AdvanceNotBound(invoiceId);
+        emit AdvanceRolledToBlue(invoiceId, a.account, blueMarketId);
+    }
+
+    function _openAdvance(uint256 invoiceId, uint128 units) internal view returns (Advance storage a) {
+        a = advanceOf[invoiceId];
+        if (a.account == address(0)) revert AdvanceNotBound(invoiceId);
+        uint256 open = a.units - a.repaidUnits;
+        if (units == 0 || units > open) revert UnitsExceedOpen(units, open);
+    }
+
     // ── Views ──────────────────────────────────────────────────────────
+
+    /// @notice the receivable's final installment due date (Midnight maturity selection).
+    function dueDate(uint256 invoiceId) public view returns (uint256) {
+        Invoice storage inv = invoices[invoiceId];
+        return installmentDue(invoiceId, inv.nInstallments == 0 ? 0 : inv.nInstallments - 1);
+    }
+
+    /// @notice first instant an installment due at `due` counts as late on BUFI's side:
+    ///         due + grace (+ crossChainBuffer on the Midnight path).
+    function lateAfter(uint256 invoiceId, uint256 due) public view returns (uint256) {
+        return due + invoices[invoiceId].grace + (MIDNIGHT_MODE ? crossChainBuffer : 0);
+    }
+
+    function isLate(uint256 invoiceId) external view returns (bool) {
+        Invoice storage inv = invoices[invoiceId];
+        if (inv.status != Status.Funded) return false;
+        return block.timestamp > lateAfter(invoiceId, installmentDue(invoiceId, inv.paidInstallments));
+    }
+
+    function graceOf(uint256 invoiceId) external view returns (uint32) {
+        return invoices[invoiceId].grace;
+    }
 
     function installmentDue(uint256 invoiceId, uint8 index) public view returns (uint256) {
         Invoice storage inv = invoices[invoiceId];
@@ -536,7 +729,7 @@ contract InvoiceShelf is AccessControl, ReentrancyGuard {
 
     function _settle(uint256 invoiceId, Invoice storage inv) internal {
         inv.status = Status.Settled;
-        uint256 residual = inv.holdbackCollected; // only CASH actually collected is releasable
+        uint256 residual = MIDNIGHT_MODE ? 0 : inv.holdbackCollected; // only CASH collected is releasable
         inv.holdbackCollected = 0;
         if (residual > 0) {
             if (!workspaceFrozen[inv.sellerAgentId]) {
