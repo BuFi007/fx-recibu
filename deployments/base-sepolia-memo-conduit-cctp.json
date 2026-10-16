@@ -1,0 +1,21 @@
+{
+  "network": "base-sepolia",
+  "chainId": 84532,
+  "contract": "MemoConduit",
+  "variant": "cctp",
+  "address": "0x2bCE41c6b7db5058951FBB0edEc13a27560c6014",
+  "deployTx": "0xfffd7e2221ceaa35352776c574bdceadd5a0f61d817a89785f89ce2136c1b72f",
+  "deployedAt": "2026-10-14",
+  "deployer": "0x09Ce8E2B3Fede2727dA4392Ea8Fe618305ba0474 (desk testnet deployer; holds no role)",
+  "factory": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+  "salt": "keccak256(\"bufi.memo-conduit.cctp.v1\")",
+  "addressBook": "0x0000000d81083B16EA76dfab46B0315B0eDBF3d0",
+  "tokens": [
+    "USDC 0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    "EURC 0x808456652fdb597867f38412077A9182bf77359F"
+  ],
+  "runtimeKeccak": "0xf8960af4c85aa02d4ce5f45a3cb84792a82aa29a81383348142b2e7bd3ced617",
+  "codeBytes": 13587,
+  "script": "script/DeployMemoConduitCctpTestnets.s.sol",
+  "why": "CCTP v2 USDC + CCTPx EURC/cirBTC bridge payments with memo (testnet only, 2026-10-14). The v1 memo-only conduit on this chain stays live; Desk active destinations are not switched."
+}

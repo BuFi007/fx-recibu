@@ -1,0 +1,21 @@
+{
+  "network": "fuji",
+  "chainId": 43113,
+  "contract": "MemoConduit",
+  "variant": "cctp",
+  "address": "0xAAB9FefE7528E01B56F951907C42538Fc0E411dD",
+  "deployTx": "0xfabfe90b7183cefa02c56842fd31fbeb22308c045dc9d6ffab26bd1bcd816e81",
+  "deployedAt": "2026-10-14",
+  "deployer": "0x09Ce8E2B3Fede2727dA4392Ea8Fe618305ba0474 (desk testnet deployer; holds no role)",
+  "factory": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+  "salt": "keccak256(\"bufi.memo-conduit.cctp.v1\")",
+  "addressBook": "0x0000000d81083B16EA76dfab46B0315B0eDBF3d0",
+  "tokens": [
+    "USDC 0x5425890298aed601595a70AB815c96711a31Bc65",
+    "EURC 0x5E44db7996c682E92a960b65AC713a54AD815c6B"
+  ],
+  "runtimeKeccak": "0xf8960af4c85aa02d4ce5f45a3cb84792a82aa29a81383348142b2e7bd3ced617",
+  "codeBytes": 13587,
+  "script": "script/DeployMemoConduitCctpTestnets.s.sol",
+  "why": "CCTP v2 USDC + CCTPx EURC/cirBTC bridge payments with memo (testnet only, 2026-10-14). The v1 memo-only conduit on this chain stays live; Desk active destinations are not switched."
+}

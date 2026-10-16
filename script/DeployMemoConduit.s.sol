@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity 0.8.26;
 
+import {MemoConduitCctpConfig} from "../src/rails/MemoConduitCctpConfig.sol";
 import {Script} from "forge-std/Script.sol";
 import {MemoConduit, IAddressBook} from "../src/rails/MemoConduit.sol";
 
@@ -25,7 +26,7 @@ contract DeployMemoConduit is Script {
         tokens[0] = USDC;
         tokens[1] = EURC_TESTNET;
         vm.startBroadcast();
-        conduit = new MemoConduit(IAddressBook(ADDRESS_BOOK), tokens);
+        conduit = new MemoConduit(IAddressBook(ADDRESS_BOOK), tokens, MemoConduitCctpConfig.none());
         vm.stopBroadcast();
     }
 }
