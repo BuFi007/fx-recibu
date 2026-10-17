@@ -4,7 +4,7 @@ pragma solidity 0.8.26;
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IDocumentReceivableRegistry} from "../interfaces/IDocumentReceivableRegistry.sol";
-import {IBUFIIdentityRegistry} from "../interfaces/IBUFIIdentityRegistry.sol";
+import {IAgentIdentityRegistry} from "../interfaces/IAgentIdentityRegistry.sol";
 
 /// @title  DocumentReceivableRegistry
 /// @notice DATA-ONLY registry that records identity and collection history of
@@ -14,8 +14,14 @@ import {IBUFIIdentityRegistry} from "../interfaces/IBUFIIdentityRegistry.sol";
 ///   DEFAULT_ADMIN_ROLE — pause / unpause, role management.
 ///   WRITER_ROLE        — register, recordPayment, recordReversal, amendTerms.
 ///
-/// Checks-Effects-Interactions: the only external call is `IDENTITY.exists` in
-/// `register`, which is a view-only call on a trusted, immutable address.
+/// Checks-Effects-Interactions: the only external call is a STATICCALL to
+/// `IDENTITY.ownerOf` in `register`, on a trusted, immutable address. It runs
+/// before any state is written and cannot re-enter (static context).
+///
+/// Creditor existence: `IDENTITY` may be the ERC-8004 IdentityRegistry (ERC-721,
+/// `ownerOf` reverts for an unknown id) or fx-recibu's BUFIIdentityRegistry
+/// (`ownerOf` returns address(0) for an unknown id). `_creditorExists` treats a
+/// revert, empty or malformed return data, and address(0) all as "unknown".
 contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceivableRegistry {
     // ─────────────────────────────────────────────────────────────────────────
     // Constants & immutables
@@ -24,8 +30,9 @@ contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceiva
     /// @notice Role required to write (register / record / amend) receivables.
     bytes32 public constant WRITER_ROLE = keccak256("WRITER_ROLE");
 
-    /// @notice The BUFI workspace-identity registry used to validate creditor agent ids.
-    IBUFIIdentityRegistry public immutable IDENTITY;
+    /// @notice The agent-identity registry used to validate creditor agent ids
+    ///         (ERC-8004 IdentityRegistry or BUFIIdentityRegistry; see {IAgentIdentityRegistry}).
+    IAgentIdentityRegistry public immutable IDENTITY;
 
     // ─────────────────────────────────────────────────────────────────────────
     // Storage
@@ -72,11 +79,11 @@ contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceiva
     // ─────────────────────────────────────────────────────────────────────────
 
     /// @param admin_            Address to receive DEFAULT_ADMIN_ROLE.
-    /// @param identityRegistry_ Address of the deployed BUFIIdentityRegistry.
+    /// @param identityRegistry_ Address of the agent-identity registry (ERC-8004 or BUFIIdentityRegistry).
     constructor(address admin_, address identityRegistry_) {
         if (admin_ == address(0) || identityRegistry_ == address(0)) revert ZeroAddress();
         _grantRole(DEFAULT_ADMIN_ROLE, admin_);
-        IDENTITY = IBUFIIdentityRegistry(identityRegistry_);
+        IDENTITY = IAgentIdentityRegistry(identityRegistry_);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -110,8 +117,8 @@ contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceiva
         uint256 existingId = _idOfCommitment[a.documentCommitment];
         if (existingId != 0) revert DocumentAlreadyRegistered(a.documentCommitment, existingId);
 
-        // External view call — only external call in this function (CEI safe).
-        if (!IDENTITY.exists(a.creditorAgentId)) revert UnknownCreditorAgent(a.creditorAgentId);
+        // Only external call in this function: a STATICCALL, before any effects (CEI safe).
+        if (!_creditorExists(a.creditorAgentId)) revert UnknownCreditorAgent(a.creditorAgentId);
 
         if (a.debtorCommitment == bytes32(0)) revert ZeroField(0);
         if (a.unit == bytes32(0)) revert ZeroField(1);
@@ -327,6 +334,23 @@ contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceiva
     ///      reversal evidence.  The two mappings share one global single-use namespace.
     function _isUsed(bytes32 evidence) internal view returns (bool) {
         return _payments[evidence].receivableId != 0 || _reversals[evidence].receivableId != 0;
+    }
+
+    /// @dev True iff `IDENTITY.ownerOf(agentId)` succeeds AND returns a well-formed,
+    ///      non-zero address. A raw staticcall is used instead of `try/catch` because a
+    ///      high-level try/catch does NOT catch empty or malformed return data (ABI
+    ///      decoding of the result reverts in the caller); here those cases must read as
+    ///      "unknown creditor", never as a bare revert.
+    ///      - call reverts (ERC-721 `ERC721NonexistentToken`, or any other reason) → false
+    ///      - target has no code / returns < 32 bytes                               → false
+    ///      - returned word is not a clean 20-byte address (dirty upper bits)       → false
+    ///      - returned address is address(0) (BUFIIdentityRegistry unknown id)      → false
+    function _creditorExists(uint256 agentId) internal view returns (bool) {
+        (bool ok, bytes memory ret) =
+            address(IDENTITY).staticcall(abi.encodeCall(IAgentIdentityRegistry.ownerOf, (agentId)));
+        if (!ok || ret.length < 32) return false;
+        uint256 raw = abi.decode(ret, (uint256));
+        return raw != 0 && raw <= type(uint160).max;
     }
 
     /// @dev Pure status derivation.  paidUnits == 0 → Open; < principal → PartiallyPaid; == principal → Paid.

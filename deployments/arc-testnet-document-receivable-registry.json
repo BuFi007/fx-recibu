@@ -1,4 +1,11 @@
 {
+  "status": "SUPERSEDED - do not use",
+  "supersededReason": [
+    "admin_ (DEFAULT_ADMIN_ROLE) is the Arc Studio platform smart account 0x5B12Ce46C7194aD57d143bC22847224047b1Ef42, not a BUFI-controlled key; granting WRITER_ROLE from it would have required creating a Circle API key on the owner's account, which was declined. WRITER_ROLE was never granted.",
+    "creditor check at this commit (632a233) calls exists(uint256), which the ERC-8004 IdentityRegistry on Arc testnet (0x8004A818BFB912233c491871b3d84c89A494BD9e, where BUFI workspaces actually hold their agent ids, e.g. 896875 / 889329) does NOT expose: exists(uint256) reverts there, so every register() against it would revert. Fixed in the next commit by a staticcall to ownerOf(uint256) that treats revert / empty data / address(0) as unknown (IAgentIdentityRegistry)."
+  ],
+  "supersededAt": "2026-10-17",
+  "replacement": "pending: redeploy from the fixed commit with a BUFI-controlled admin and identityRegistry_ = 0x8004A818BFB912233c491871b3d84c89A494BD9e; record it in this file when done",
   "network": "arc-testnet",
   "chainId": 5042002,
   "rpc": "https://rpc.testnet.arc.io",
@@ -40,7 +47,7 @@
     "pendingGrant": {
       "role": "WRITER_ROLE",
       "account": "0x690a4c1292ae25ed8f0b87b45ffd3d3a1b803a22",
-      "status": "PENDING - not executed",
+      "status": "CANCELLED - deployment superseded, grant will be made on the replacement",
       "reason": "admin is the Arc Studio platform smart account; calling grantRole from it requires provisioning a Circle Standard Developer API key in the owner's Circle Developer Console, which needs the owner's explicit approval"
     }
   },

@@ -28,7 +28,8 @@ interface IDocumentReceivableRegistry {
 
     /// @notice Arguments required to register a new receivable.
     /// @param documentCommitment Unique hash that identifies the underlying document.
-    /// @param creditorAgentId    Agent id of the creditor in the BUFI identity registry.
+    /// @param creditorAgentId    Agent id of the creditor in the configured identity registry
+    ///                           (ERC-8004 IdentityRegistry or BUFIIdentityRegistry; `ownerOf` must resolve).
     /// @param debtorCommitment   Privacy-preserving commitment to the debtor's identity.
     /// @param principal          Face value of the receivable in `unit` units.
     /// @param unit               Currency / unit of account (e.g. keccak256("USDC")).
@@ -131,7 +132,7 @@ interface IDocumentReceivableRegistry {
     /// @notice The document commitment is already registered under `existingId`.
     error DocumentAlreadyRegistered(bytes32 documentCommitment, uint256 existingId);
 
-    /// @notice The creditor agent id does not exist in the identity registry.
+    /// @notice `IDENTITY.ownerOf(agentId)` reverted, returned no / malformed data, or returned address(0).
     error UnknownCreditorAgent(uint256 agentId);
 
     /// @notice A required `bytes32` field was zero. `field` encodes which one:

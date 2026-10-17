@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 
 import {Test} from "forge-std/Test.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+import {IERC721Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {ERC1155} from "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
@@ -10,6 +11,65 @@ import {ERC1155} from "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import {BUFIIdentityRegistry} from "../../src/identity/BUFIIdentityRegistry.sol";
 import {DocumentReceivableRegistry} from "../../src/invoice/DocumentReceivableRegistry.sol";
 import {IDocumentReceivableRegistry} from "../../src/interfaces/IDocumentReceivableRegistry.sol";
+import {IAgentIdentityRegistry} from "../../src/interfaces/IAgentIdentityRegistry.sol";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Identity-registry mocks: every `ownerOf` shape the registry must cope with
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// @dev ERC-8004 IdentityRegistry shape: ERC-721, `ownerOf` REVERTS for an unknown id
+///      (OZ `ERC721NonexistentToken`, selector 0x7e273289 — the exact revert observed on
+///      Arc testnet 0x8004A818BFB912233c491871b3d84c89A494BD9e).
+contract ERC721IdentityMock is ERC721 {
+    constructor() ERC721("Agent", "AGT") {}
+
+    function mint(address to, uint256 agentId) external {
+        _mint(to, agentId);
+    }
+}
+
+/// @dev fx-recibu BUFIIdentityRegistry shape: `ownerOf` returns address(0) for an unknown id.
+contract ZeroReturningIdentityMock {
+    mapping(uint256 => address) public ownerOf;
+
+    function set(uint256 agentId, address owner) external {
+        ownerOf[agentId] = owner;
+    }
+}
+
+/// @dev Malformed: every call succeeds and returns NO data.
+contract EmptyReturnIdentityMock {
+    fallback() external {}
+}
+
+/// @dev Malformed: returns 31 bytes (one short of a word).
+contract ShortReturnIdentityMock {
+    fallback() external {
+        assembly {
+            mstore(0, 1)
+            return(1, 31)
+        }
+    }
+}
+
+/// @dev Malformed: returns a 32-byte word that is not a clean address (dirty upper bits).
+contract DirtyWordIdentityMock {
+    fallback() external {
+        assembly {
+            mstore(0, not(0))
+            return(0, 32)
+        }
+    }
+}
+
+/// @dev Reverts with an arbitrary custom error (not the ERC-721 one).
+contract RevertingIdentityMock {
+    error Nope(uint256 id);
+
+    function ownerOf(uint256 agentId) external pure returns (address) {
+        revert Nope(agentId);
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Minimal mocks for no-value / token-rejection tests
@@ -45,7 +105,8 @@ abstract contract DocumentReceivableBase is Test {
     address internal stranger = makeAddr("stranger");
 
     // ── contracts ─────────────────────────────────────────────────────────────
-    BUFIIdentityRegistry internal identity;
+    BUFIIdentityRegistry internal identity; // set only by the default (BUFIIdentityRegistry) fixture
+    address internal identityAddr; // whatever _deployIdentity() returned
     DocumentReceivableRegistry internal registry;
 
     // ── fixture data ──────────────────────────────────────────────────────────
@@ -73,20 +134,26 @@ abstract contract DocumentReceivableBase is Test {
     uint64 internal constant DUE_AT = 1_700_000_000 + 30 days;
     uint128 internal constant PRINCIPAL = 1_000e6;
 
-    function setUp() public virtual {
-        // Deploy and wire identity registry
+    /// @dev Identity fixture hook. Default: the REAL fx-recibu BUFIIdentityRegistry with one
+    ///      registered workspace. Suites override it to run against other `ownerOf` shapes.
+    function _deployIdentity() internal virtual returns (address identityRegistry, uint256 knownAgentId) {
         address identityAdmin = makeAddr("identityAdmin");
         identity = new BUFIIdentityRegistry(identityAdmin);
 
-        // Register a workspace so creditorAgentId is valid
         vm.prank(identityAdmin);
         identity.grantRole(keccak256("ISSUER_ROLE"), identityAdmin);
 
         vm.prank(identityAdmin);
-        creditorAgentId = identity.registerWorkspace(WS_ID, identityAdmin);
+        knownAgentId = identity.registerWorkspace(WS_ID, identityAdmin);
+        identityRegistry = address(identity);
+    }
+
+    function setUp() public virtual {
+        // Deploy and wire the identity registry (shape chosen by the suite)
+        (identityAddr, creditorAgentId) = _deployIdentity();
 
         // Deploy the registry under test
-        registry = new DocumentReceivableRegistry(admin, address(identity));
+        registry = new DocumentReceivableRegistry(admin, identityAddr);
 
         // Grant writer role
         vm.prank(admin);
@@ -124,7 +191,8 @@ abstract contract DocumentReceivableBase is Test {
 // ─────────────────────────────────────────────────────────────────────────────
 contract DocumentReceivableRegistry_Constructor is DocumentReceivableBase {
     function test_constructor_setsIdentity() public view {
-        assertEq(address(registry.IDENTITY()), address(identity));
+        assertEq(address(registry.IDENTITY()), identityAddr);
+        assertEq(identityAddr, address(identity));
     }
 
     function test_constructor_grantsAdminRole() public view {
@@ -420,6 +488,127 @@ contract DocumentReceivableRegistry_Register is DocumentReceivableBase {
         vm.prank(writer);
         uint256 id = registry.register(a);
         assertEq(id, 1);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Register suite re-run against the ERC-8004 (ERC-721) identity shape
+// ─────────────────────────────────────────────────────────────────────────────
+contract DocumentReceivableRegistry_Register_ERC721Identity is DocumentReceivableRegistry_Register {
+    /// @dev Real BUFI QA workspace id on the Arc testnet ERC-8004 registry.
+    uint256 internal constant ERC8004_AGENT_ID = 896875;
+
+    function _deployIdentity() internal override returns (address, uint256) {
+        ERC721IdentityMock mock = new ERC721IdentityMock();
+        mock.mint(makeAddr("workspace-owner"), ERC8004_AGENT_ID);
+        return (address(mock), ERC8004_AGENT_ID);
+    }
+
+    /// @dev The unknown-id path on this shape is a REVERT (ERC721NonexistentToken), which the
+    ///      registry must translate into UnknownCreditorAgent rather than bubble up.
+    function test_identityShape_unknownIdReverts_isTranslated() public {
+        vm.expectRevert(abi.encodeWithSelector(IERC721Errors.ERC721NonexistentToken.selector, uint256(9999)));
+        IAgentIdentityRegistry(identityAddr).ownerOf(9999); // the raw shape
+
+        IDocumentReceivableRegistry.RegisterArgs memory a = _defaultArgs();
+        a.creditorAgentId = 9999;
+        vm.prank(writer);
+        vm.expectRevert(
+            abi.encodeWithSelector(IDocumentReceivableRegistry.UnknownCreditorAgent.selector, uint256(9999))
+        );
+        registry.register(a);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Register suite re-run against a zero-returning identity shape (BUFIIdentityRegistry style)
+// ─────────────────────────────────────────────────────────────────────────────
+contract DocumentReceivableRegistry_Register_ZeroReturningIdentity is DocumentReceivableRegistry_Register {
+    function _deployIdentity() internal override returns (address, uint256) {
+        ZeroReturningIdentityMock mock = new ZeroReturningIdentityMock();
+        mock.set(42, makeAddr("workspace-owner"));
+        return (address(mock), 42);
+    }
+
+    function test_identityShape_unknownIdReturnsZero_isTranslated() public view {
+        assertEq(IAgentIdentityRegistry(identityAddr).ownerOf(9999), address(0)); // the raw shape
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Malformed / degenerate identity shapes → always UnknownCreditorAgent, never a bare revert
+// ─────────────────────────────────────────────────────────────────────────────
+contract DocumentReceivableRegistry_IdentityShapes is DocumentReceivableBase {
+    function _expectUnknown(address identityRegistry, uint256 agentId) internal {
+        DocumentReceivableRegistry reg = new DocumentReceivableRegistry(admin, identityRegistry);
+        vm.prank(admin);
+        reg.grantRole(WRITER_ROLE, writer);
+
+        IDocumentReceivableRegistry.RegisterArgs memory a = _defaultArgs();
+        a.creditorAgentId = agentId;
+        vm.prank(writer);
+        vm.expectRevert(abi.encodeWithSelector(IDocumentReceivableRegistry.UnknownCreditorAgent.selector, agentId));
+        reg.register(a);
+        assertEq(reg.nextReceivableId(), 1, "nothing registered");
+    }
+
+    function test_identity_emptyReturnData_isUnknownCreditor() public {
+        _expectUnknown(address(new EmptyReturnIdentityMock()), 1);
+    }
+
+    function test_identity_noCodeAtAddress_isUnknownCreditor() public {
+        address eoa = makeAddr("not-a-contract");
+        assertEq(eoa.code.length, 0);
+        _expectUnknown(eoa, 1);
+    }
+
+    function test_identity_shortReturnData_isUnknownCreditor() public {
+        _expectUnknown(address(new ShortReturnIdentityMock()), 1);
+    }
+
+    function test_identity_dirtyUpperBits_isUnknownCreditor() public {
+        _expectUnknown(address(new DirtyWordIdentityMock()), 1);
+    }
+
+    function test_identity_customErrorRevert_isUnknownCreditor() public {
+        _expectUnknown(address(new RevertingIdentityMock()), 7);
+    }
+
+    function test_identity_erc721Unknown_isUnknownCreditor() public {
+        _expectUnknown(address(new ERC721IdentityMock()), 896875);
+    }
+
+    function test_identity_zeroReturning_isUnknownCreditor() public {
+        _expectUnknown(address(new ZeroReturningIdentityMock()), 896875);
+    }
+
+    /// @dev Both live shapes accept a known id; an id is judged ONLY against the configured registry.
+    function test_identity_bothLiveShapes_acceptKnownId() public {
+        ERC721IdentityMock erc721 = new ERC721IdentityMock();
+        erc721.mint(makeAddr("o1"), 896875);
+        ZeroReturningIdentityMock zero = new ZeroReturningIdentityMock();
+        zero.set(889329, makeAddr("o2"));
+
+        DocumentReceivableRegistry regA = new DocumentReceivableRegistry(admin, address(erc721));
+        DocumentReceivableRegistry regB = new DocumentReceivableRegistry(admin, address(zero));
+        vm.startPrank(admin);
+        regA.grantRole(WRITER_ROLE, writer);
+        regB.grantRole(WRITER_ROLE, writer);
+        vm.stopPrank();
+
+        IDocumentReceivableRegistry.RegisterArgs memory a = _defaultArgs();
+        a.creditorAgentId = 896875;
+        vm.prank(writer);
+        assertEq(regA.register(a), 1);
+        vm.prank(writer);
+        vm.expectRevert(
+            abi.encodeWithSelector(IDocumentReceivableRegistry.UnknownCreditorAgent.selector, uint256(896875))
+        );
+        regB.register(a);
+
+        a.creditorAgentId = 889329;
+        vm.prank(writer);
+        assertEq(regB.register(a), 1);
     }
 }
 
