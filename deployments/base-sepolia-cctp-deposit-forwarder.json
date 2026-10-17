@@ -1,0 +1,58 @@
+{
+  "network": "base-sepolia",
+  "chainId": 84532,
+  "deployedAt": "2026-10-17",
+  "deployer": "0x09Ce8E2B3Fede2727dA4392Ea8Fe618305ba0474 (desk testnet deployer; holds no role — neither contract has an owner)",
+  "create2Deployer": "0x4e59b44847b379578588920cA78FbF26c0B4956C",
+  "script": "script/DeployCctpDepositForwarder.s.sol",
+  "contracts": {
+    "CctpDepositForwarder": {
+      "role": "implementation (clones only; direct calls revert NotAClone)",
+      "address": "0x23CCCf9e090937DF0F97f166DBF7302A94A653Ea",
+      "deployTx": "0x3afa81e03dd8f26ba1c492cb2fb56dcfd3be71271b8d09d10cd1ecf3a9747109",
+      "salt": "keccak256(\"bufi.cctp-deposit-forwarder.v1.implementation\")",
+      "verified": "sourcify exact_match"
+    },
+    "CctpDepositForwarderFactory": {
+      "address": "0x4035b61123367428ECFd8D4f6FD2bd74e00038ec",
+      "deployTx": "0xaef2d519d96891c4ef9f70a893e5124c5795b628e1e75922f0b77a5d0649b525",
+      "salt": "keccak256(\"bufi.cctp-deposit-forwarder.v1.factory\")",
+      "constructor": {
+        "implementation": "0x23CCCf9e090937DF0F97f166DBF7302A94A653Ea",
+        "usdc": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        "tokenMessenger": "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"
+      },
+      "verified": "sourcify exact_match"
+    }
+  },
+  "cctp": {
+    "sourceDomain": 6,
+    "destinationDomains": { "ARC-TESTNET": 26, "AVAX-FUJI": 1 },
+    "tokenMessengerV2": "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
+    "messageTransmitterV2": "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
+    "verifiedOnChain": "2026-10-17: MessageTransmitterV2.localDomain()=6 on Base Sepolia, 26 on Arc testnet, 1 on Fuji; TokenMessengerV2.remoteTokenMessengers(26) and (1) set on Base Sepolia; implementation has no source-side minFee"
+  },
+  "smokeTest": {
+    "forwarder": "0xBA2633E6332fE0A28FF054258D0c92857003cC69",
+    "args": {
+      "destinationDomain": 26,
+      "mintRecipient": "0x000000000000000000000000a02c4c249f14a69bf1d4adca093c625ef066c296",
+      "destinationCaller": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "maxFastFeeBps": 10,
+      "documentCommitment": "0x5dc138fa17938b950c745780e851d6ae20e06328a124cd5a40d9f848979a62ba (keccak256(\"bufi.forwarder.smoke.2026-10-17\"))"
+    },
+    "counterfactualFundTx": "0x1966ba2fa35472aa7d0aea1ae5a03da95ee6d8c6581d3f1b60104609a5be5b32",
+    "deployAndFlushTx": "0x6e45126f13d9c5459839f41b4c1188f0fc5fe1e550a054936482109d6741c8da",
+    "burn": { "amount": 1000000, "maxFee": 1000, "minFinalityThreshold": 1000 },
+    "cctpNonce": "0x1e9bf9392ce57c58689728f0820ac5f6233a0ea99a965fa64894fb716026f5b3",
+    "attestation": "complete, finalityThresholdExecuted 1000, feeExecuted 130",
+    "arcTestnetMintTx": "0x03deaea47b0618d8440e42ee32522de45fd68586b240102f6fb78795625083fe",
+    "recipientReceived": 999870
+  },
+  "baseMainnetRecordedNotDeployed": {
+    "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "tokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "messageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "verifiedOnChain": "2026-10-17: localDomain()=6, remoteTokenMessengers(26) and (1) set, burnLimitsPerMessage(USDC)=1e13, implementation has no source-side minFee"
+  }
+}
