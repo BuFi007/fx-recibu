@@ -1,0 +1,59 @@
+{
+  "status": "SUPERSEDED - do not use",
+  "supersededReason": [
+    "admin_ (DEFAULT_ADMIN_ROLE) is the Arc Studio platform smart account 0x5B12Ce46C7194aD57d143bC22847224047b1Ef42, not a BUFI-controlled key; granting WRITER_ROLE from it would have required creating a Circle API key on the owner's account, which was declined. WRITER_ROLE was never granted.",
+    "creditor check at this commit (632a233) calls exists(uint256), which the ERC-8004 IdentityRegistry on Arc testnet (0x8004A818BFB912233c491871b3d84c89A494BD9e, where BUFI workspaces actually hold their agent ids, e.g. 896875 / 889329) does NOT expose: exists(uint256) reverts there, so every register() against it would revert. Fixed in the next commit by a staticcall to ownerOf(uint256) that treats revert / empty data / address(0) as unknown (IAgentIdentityRegistry)."
+  ],
+  "supersededAt": "2026-10-17",
+  "replacement": "pending: redeploy from the fixed commit with a BUFI-controlled admin and identityRegistry_ = 0x8004A818BFB912233c491871b3d84c89A494BD9e; record it in this file when done",
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "rpc": "https://rpc.testnet.arc.io",
+  "contract": "DocumentReceivableRegistry",
+  "address": "0xe4fbd09aaf6d4551008ac361bd4d6f37b37d2a0f",
+  "sourceCommit": "632a2333cb9846fbf85fe8cfef50862b2a8051a7",
+  "deployTx": "0xcd17ce737c9917f61bc01eac0520cce612aeae90799ba5681a261f9308d2921c",
+  "deployTxNote": "ERC-4337 UserOp bundled via EntryPoint 0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789; outer tx sender 0xdea3556040658885b0ac5bb930f0b7e2f52dbfbc (bundler)",
+  "deployBlock": 67598220,
+  "deployedAt": "2026-10-17T02:28:26Z",
+  "deployer": "0x5B12Ce46C7194aD57d143bC22847224047b1Ef42 (Arc Studio platform deployer, Circle-managed smart account; not a BUFI key)",
+  "constructorArgs": {
+    "admin_": "0x5B12Ce46C7194aD57d143bC22847224047b1Ef42",
+    "identityRegistry_": "0x7cdD6CDaf2aB82d9B7eB318eEAf45f0313683514"
+  },
+  "identityRegistryNote": "0x7cdD...3514 runtime is byte-identical to src/identity/BUFIIdentityRegistry.sol at this commit and exposes exists(uint256) (0x4f558e79). deployments/arc-testnet.json still lists an older BUFIIdentityRegistry at 0x63e80E438cFd3727ec8E9536FE04281C1FA9bFb7. As of deploy, exists(1..100 sampled) == false: no creditor agent is registered yet.",
+  "compiler": {
+    "solc": "0.8.26+commit.8a97fa7a",
+    "optimizer": true,
+    "optimizerRuns": 200,
+    "viaIR": true,
+    "evmVersion": "cancun",
+    "bytecodeHash": "ipfs (default)"
+  },
+  "buildNote": "Built in the Arc Studio sandbox with sources at contracts/ and OpenZeppelin 5.1.0 (repo pins 5.6.1). Executable runtime is identical to this repo's own build (forge, src/, OZ 5.6.1) once the IDENTITY immutable is masked; only the CBOR metadata hash differs. The exact sandbox standard-JSON input reproduces the on-chain runtime byte-for-byte.",
+  "runtimeCode": {
+    "lengthBytes": 5686,
+    "keccak256": "0x94f6822431c27208cf53380dc06bfa4c091f2b10f02eea507741f22acfc2a5b2"
+  },
+  "readBackAtDeploy": {
+    "IDENTITY": "0x7cdD6CDaf2aB82d9B7eB318eEAf45f0313683514",
+    "nextReceivableId": 1,
+    "paused": false,
+    "hasRole(DEFAULT_ADMIN_ROLE, deployer)": true,
+    "hasRole(WRITER_ROLE, 0x690a4c1292ae25ed8f0b87b45ffd3d3a1b803a22)": false
+  },
+  "roles": {
+    "WRITER_ROLE": "0x2b8f168f361ac1393a163ed4adfa899a87be7b7c71645167bdaddd822ae453c8",
+    "pendingGrant": {
+      "role": "WRITER_ROLE",
+      "account": "0x690a4c1292ae25ed8f0b87b45ffd3d3a1b803a22",
+      "status": "CANCELLED - deployment superseded, grant will be made on the replacement",
+      "reason": "admin is the Arc Studio platform smart account; calling grantRole from it requires provisioning a Circle Standard Developer API key in the owner's Circle Developer Console, which needs the owner's explicit approval"
+    }
+  },
+  "verification": {
+    "explorer": "https://explorer.testnet.arc.io/address/0xe4fbd09aaf6d4551008ac361bd4d6f37b37d2a0f",
+    "status": "fully verified (exact match)",
+    "verifiedAt": "2026-10-17T02:36:08Z"
+  }
+}
