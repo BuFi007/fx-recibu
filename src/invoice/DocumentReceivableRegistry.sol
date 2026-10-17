@@ -43,11 +43,14 @@ contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceiva
     /// @dev evidence → PaymentRecord (receivableId == 0 means unused).
     mapping(bytes32 => PaymentRecord) internal _payments;
 
+    /// @dev reversalEvidence → ReversalRecord (receivableId == 0 means unused).
+    mapping(bytes32 => ReversalRecord) internal _reversals;
+
     /// @dev id → version → termsHash history.
     mapping(uint256 => mapping(uint32 => bytes32)) internal _termsHashAtVersion;
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Internal struct (not exposed through the interface)
+    // Internal structs (not exposed through the interface)
     // ─────────────────────────────────────────────────────────────────────────
 
     /// @dev Per-evidence payment record.
@@ -55,6 +58,13 @@ contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceiva
         uint256 receivableId; // 0 = slot not used
         uint128 appliedUnits;
         uint128 reversedUnits;
+    }
+
+    /// @dev Per-reversalEvidence reversal record.
+    struct ReversalRecord {
+        uint256 receivableId; // 0 = slot not used
+        bytes32 originalEvidence;
+        uint128 units;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -158,7 +168,7 @@ contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceiva
         if (appliedUnits == 0) revert ZeroUnits();
         if (evidenceCommitment == bytes32(0)) revert ZeroField(4);
         if (legsRoot == bytes32(0)) revert ZeroField(5);
-        if (_payments[evidenceCommitment].receivableId != 0) revert EvidenceAlreadyUsed(evidenceCommitment);
+        if (_isUsed(evidenceCommitment)) revert EvidenceAlreadyUsed(evidenceCommitment);
 
         // Overflow-safe: compare against remaining capacity, never add first.
         uint128 remaining = r.principal - r.paidUnits;
@@ -179,7 +189,7 @@ contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceiva
     // ─────────────────────────────────────────────────────────────────────────
 
     /// @inheritdoc IDocumentReceivableRegistry
-    function recordReversal(uint256 id, bytes32 originalEvidence, uint128 units, bytes32 reasonHash)
+    function recordReversal(uint256 id, bytes32 originalEvidence, uint128 units, bytes32 reversalEvidence)
         external
         onlyRole(WRITER_ROLE)
         whenNotPaused
@@ -188,11 +198,15 @@ contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceiva
 
         // ── Validation ────────────────────────────────────────────────────────
         if (units == 0) revert ZeroUnits();
-        if (reasonHash == bytes32(0)) revert ZeroField(6);
+        if (reversalEvidence == bytes32(0)) revert ZeroField(6);
 
         PaymentRecord storage rec = _payments[originalEvidence];
         if (rec.receivableId == 0) revert UnknownEvidence(originalEvidence);
         if (rec.receivableId != id) revert EvidenceReceivableMismatch(originalEvidence, id, rec.receivableId);
+
+        // Global single-use namespace: covers payment evidences, reversal evidences,
+        // and originalEvidence itself (which is already a payment evidence).
+        if (_isUsed(reversalEvidence)) revert EvidenceAlreadyUsed(reversalEvidence);
 
         // Overflow-safe: compare remaining reversible capacity.
         uint128 reversibleRemaining = rec.appliedUnits - rec.reversedUnits;
@@ -203,11 +217,14 @@ contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceiva
         // ── Effects ───────────────────────────────────────────────────────────
         rec.reversedUnits += units;
 
+        _reversals[reversalEvidence] =
+            ReversalRecord({receivableId: id, originalEvidence: originalEvidence, units: units});
+
         r.paidUnits -= units;
         r.reversedUnits += units;
         r.status = _deriveStatus(r.paidUnits, r.principal);
 
-        emit ReversalRecorded(id, originalEvidence, units, r.paidUnits, reasonHash);
+        emit ReversalRecorded(id, originalEvidence, reversalEvidence, units, r.paidUnits);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -255,7 +272,7 @@ contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceiva
 
     /// @inheritdoc IDocumentReceivableRegistry
     function evidenceUsed(bytes32 evidence) external view returns (bool) {
-        return _payments[evidence].receivableId != 0;
+        return _isUsed(evidence);
     }
 
     /// @inheritdoc IDocumentReceivableRegistry
@@ -266,6 +283,16 @@ contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceiva
     {
         PaymentRecord storage rec = _payments[evidence];
         return (rec.receivableId, rec.appliedUnits, rec.reversedUnits);
+    }
+
+    /// @inheritdoc IDocumentReceivableRegistry
+    function reversalOf(bytes32 reversalEvidence)
+        external
+        view
+        returns (uint256 receivableId, bytes32 originalEvidence, uint128 units)
+    {
+        ReversalRecord storage rec = _reversals[reversalEvidence];
+        return (rec.receivableId, rec.originalEvidence, rec.units);
     }
 
     /// @inheritdoc IDocumentReceivableRegistry
@@ -294,6 +321,12 @@ contract DocumentReceivableRegistry is AccessControl, Pausable, IDocumentReceiva
     function _requireKnown(uint256 id) internal view returns (Receivable storage r) {
         if (id == 0 || id >= _nextId) revert UnknownReceivable(id);
         r = _receivables[id];
+    }
+
+    /// @dev Returns true if `evidence` is in use — either as a payment evidence or a
+    ///      reversal evidence.  The two mappings share one global single-use namespace.
+    function _isUsed(bytes32 evidence) internal view returns (bool) {
+        return _payments[evidence].receivableId != 0 || _reversals[evidence].receivableId != 0;
     }
 
     /// @dev Pure status derivation.  paidUnits == 0 → Open; < principal → PartiallyPaid; == principal → Paid.

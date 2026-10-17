@@ -61,7 +61,12 @@ abstract contract DocumentReceivableBase is Test {
     bytes32 internal constant EVIDENCE_2 = keccak256("evidence-2");
     bytes32 internal constant EVIDENCE_3 = keccak256("evidence-3");
     bytes32 internal constant LEGS = keccak256("legs-root-1");
-    bytes32 internal constant REASON = keccak256("reason-1");
+    // Reversal evidences — unique single-use commitments for each reversal call in tests.
+    bytes32 internal constant REV_EV_1 = keccak256("rev-evidence-1");
+    bytes32 internal constant REV_EV_2 = keccak256("rev-evidence-2");
+    bytes32 internal constant REV_EV_3 = keccak256("rev-evidence-3");
+    bytes32 internal constant REV_EV_4 = keccak256("rev-evidence-4");
+    bytes32 internal constant REV_EV_5 = keccak256("rev-evidence-5");
     bytes32 internal constant AUTH = keccak256("auth-1");
 
     uint64 internal constant ISSUED_AT = 1_700_000_000;
@@ -193,7 +198,7 @@ contract DocumentReceivableRegistry_Pause is DocumentReceivableBase {
 
         vm.prank(writer);
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
-        reg2.recordReversal(id, EVIDENCE_1, 50, REASON);
+        reg2.recordReversal(id, EVIDENCE_1, 50, REV_EV_1);
 
         vm.prank(writer);
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
@@ -620,7 +625,7 @@ contract DocumentReceivableRegistry_RecordReversal is DocumentReceivableBase {
         vm.expectRevert(
             abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, stranger, WRITER_ROLE)
         );
-        registry.recordReversal(_id, EVIDENCE_1, 100, REASON);
+        registry.recordReversal(_id, EVIDENCE_1, 100, REV_EV_1);
     }
 
     // ── Revert paths ──────────────────────────────────────────────────────────
@@ -628,16 +633,16 @@ contract DocumentReceivableRegistry_RecordReversal is DocumentReceivableBase {
     function test_recordReversal_revert_unknownId() public {
         vm.prank(writer);
         vm.expectRevert(abi.encodeWithSelector(IDocumentReceivableRegistry.UnknownReceivable.selector, uint256(999)));
-        registry.recordReversal(999, EVIDENCE_1, 100, REASON);
+        registry.recordReversal(999, EVIDENCE_1, 100, REV_EV_1);
     }
 
     function test_recordReversal_revert_zeroUnits() public {
         vm.prank(writer);
         vm.expectRevert(IDocumentReceivableRegistry.ZeroUnits.selector);
-        registry.recordReversal(_id, EVIDENCE_1, 0, REASON);
+        registry.recordReversal(_id, EVIDENCE_1, 0, REV_EV_1);
     }
 
-    function test_recordReversal_revert_zeroReasonHash() public {
+    function test_recordReversal_revert_zeroReversalEvidence() public {
         vm.prank(writer);
         vm.expectRevert(abi.encodeWithSelector(IDocumentReceivableRegistry.ZeroField.selector, uint8(6)));
         registry.recordReversal(_id, EVIDENCE_1, 100, bytes32(0));
@@ -647,7 +652,7 @@ contract DocumentReceivableRegistry_RecordReversal is DocumentReceivableBase {
         bytes32 bad = keccak256("not-a-payment");
         vm.prank(writer);
         vm.expectRevert(abi.encodeWithSelector(IDocumentReceivableRegistry.UnknownEvidence.selector, bad));
-        registry.recordReversal(_id, bad, 100, REASON);
+        registry.recordReversal(_id, bad, 100, REV_EV_1);
     }
 
     function test_recordReversal_revert_evidenceBelongsToOtherId() public {
@@ -666,7 +671,7 @@ contract DocumentReceivableRegistry_RecordReversal is DocumentReceivableBase {
                 IDocumentReceivableRegistry.EvidenceReceivableMismatch.selector, EVIDENCE_2, _id, id2
             )
         );
-        registry.recordReversal(_id, EVIDENCE_2, 100, REASON);
+        registry.recordReversal(_id, EVIDENCE_2, 100, REV_EV_1);
     }
 
     function test_recordReversal_revert_exceedsApplied() public {
@@ -680,7 +685,7 @@ contract DocumentReceivableRegistry_RecordReversal is DocumentReceivableBase {
                 PAY_AMOUNT + 1
             )
         );
-        registry.recordReversal(_id, EVIDENCE_1, PAY_AMOUNT + 1, REASON);
+        registry.recordReversal(_id, EVIDENCE_1, PAY_AMOUNT + 1, REV_EV_1);
     }
 
     function test_recordReversal_revert_uint128Max() public {
@@ -694,13 +699,13 @@ contract DocumentReceivableRegistry_RecordReversal is DocumentReceivableBase {
                 type(uint128).max
             )
         );
-        registry.recordReversal(_id, EVIDENCE_1, type(uint128).max, REASON);
+        registry.recordReversal(_id, EVIDENCE_1, type(uint128).max, REV_EV_1);
     }
 
     function test_recordReversal_revert_cumulativeExceedsApplied() public {
         // Partial reverse, then try to exceed remaining
         vm.prank(writer);
-        registry.recordReversal(_id, EVIDENCE_1, 300e6, REASON);
+        registry.recordReversal(_id, EVIDENCE_1, 300e6, REV_EV_1);
 
         vm.prank(writer);
         vm.expectRevert(
@@ -712,14 +717,133 @@ contract DocumentReceivableRegistry_RecordReversal is DocumentReceivableBase {
                 PAY_AMOUNT - 300e6 + 1
             )
         );
-        registry.recordReversal(_id, EVIDENCE_1, PAY_AMOUNT - 300e6 + 1, REASON);
+        registry.recordReversal(_id, EVIDENCE_1, PAY_AMOUNT - 300e6 + 1, REV_EV_2);
+    }
+
+    // ── reversalEvidence uniqueness ───────────────────────────────────────────
+
+    /// @notice Replaying the same reversalEvidence reverts EvidenceAlreadyUsed,
+    ///         even when units are still reversible on the original payment.
+    function test_recordReversal_revert_replayReversalEvidence() public {
+        vm.prank(writer);
+        registry.recordReversal(_id, EVIDENCE_1, 100, REV_EV_1);
+
+        // Units still reversible (PAY_AMOUNT - 100 > 0), but REV_EV_1 is already used.
+        vm.prank(writer);
+        vm.expectRevert(abi.encodeWithSelector(IDocumentReceivableRegistry.EvidenceAlreadyUsed.selector, REV_EV_1));
+        registry.recordReversal(_id, EVIDENCE_1, 100, REV_EV_1);
+    }
+
+    /// @notice reversalEvidence == payment evidence of the SAME id reverts EvidenceAlreadyUsed.
+    function test_recordReversal_revert_reversalEvidenceEqualsPaymentEvidenceSameId() public {
+        // EVIDENCE_1 is the payment evidence for _id — using it as reversalEvidence must fail.
+        vm.prank(writer);
+        vm.expectRevert(abi.encodeWithSelector(IDocumentReceivableRegistry.EvidenceAlreadyUsed.selector, EVIDENCE_1));
+        registry.recordReversal(_id, EVIDENCE_1, 100, EVIDENCE_1);
+    }
+
+    /// @notice reversalEvidence == payment evidence of a DIFFERENT id reverts EvidenceAlreadyUsed.
+    function test_recordReversal_revert_reversalEvidenceEqualsPaymentEvidenceDifferentId() public {
+        // Register a second receivable paid with EVIDENCE_2.
+        IDocumentReceivableRegistry.RegisterArgs memory a2 = _defaultArgs();
+        a2.documentCommitment = keccak256("doc-2");
+        vm.prank(writer);
+        uint256 id2 = registry.register(a2);
+        vm.prank(writer);
+        registry.recordPayment(id2, 1, 100, EVIDENCE_2, LEGS);
+
+        // EVIDENCE_2 is used as a payment evidence; using it as reversalEvidence on _id must fail.
+        vm.prank(writer);
+        vm.expectRevert(abi.encodeWithSelector(IDocumentReceivableRegistry.EvidenceAlreadyUsed.selector, EVIDENCE_2));
+        registry.recordReversal(_id, EVIDENCE_1, 100, EVIDENCE_2);
+    }
+
+    /// @notice reversalEvidence == originalEvidence (the same hash) reverts EvidenceAlreadyUsed,
+    ///         since originalEvidence is already a payment evidence.
+    function test_recordReversal_revert_reversalEvidenceEqualsOriginalEvidence() public {
+        vm.prank(writer);
+        vm.expectRevert(abi.encodeWithSelector(IDocumentReceivableRegistry.EvidenceAlreadyUsed.selector, EVIDENCE_1));
+        registry.recordReversal(_id, EVIDENCE_1, 100, EVIDENCE_1);
+    }
+
+    /// @notice recordPayment with an evidence previously used as reversalEvidence reverts EvidenceAlreadyUsed.
+    function test_recordReversal_paymentRejectedWhenEvidenceWasUsedAsReversalEvidence() public {
+        // REV_EV_1 is used as reversal evidence.
+        vm.prank(writer);
+        registry.recordReversal(_id, EVIDENCE_1, 100, REV_EV_1);
+
+        // Now attempt to record a payment using REV_EV_1 as payment evidence — must fail.
+        vm.prank(writer);
+        vm.expectRevert(abi.encodeWithSelector(IDocumentReceivableRegistry.EvidenceAlreadyUsed.selector, REV_EV_1));
+        registry.recordPayment(_id, 1, 100, REV_EV_1, LEGS);
+    }
+
+    /// @notice zero reversalEvidence reverts ZeroField(6).
+    function test_recordReversal_revert_zeroReversalEvidence_field6() public {
+        vm.prank(writer);
+        vm.expectRevert(abi.encodeWithSelector(IDocumentReceivableRegistry.ZeroField.selector, uint8(6)));
+        registry.recordReversal(_id, EVIDENCE_1, 100, bytes32(0));
+    }
+
+    /// @notice paused contract blocks recordReversal.
+    function test_recordReversal_revert_paused() public {
+        vm.prank(admin);
+        registry.pause();
+        vm.prank(writer);
+        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+        registry.recordReversal(_id, EVIDENCE_1, 100, REV_EV_1);
+    }
+
+    /// @notice A failed reversal leaves reversalOf and evidenceUsed unchanged.
+    function test_recordReversal_failedReversalLeavesStateUnchanged() public {
+        // Attempt reversal with zero units (must revert).
+        vm.prank(writer);
+        vm.expectRevert(IDocumentReceivableRegistry.ZeroUnits.selector);
+        registry.recordReversal(_id, EVIDENCE_1, 0, REV_EV_1);
+
+        // reversalOf(REV_EV_1) must still be zeros.
+        (uint256 rid, bytes32 origEv, uint128 units) = registry.reversalOf(REV_EV_1);
+        assertEq(rid, 0, "reversalOf rid non-zero after failed reversal");
+        assertEq(origEv, bytes32(0), "reversalOf origEv non-zero after failed reversal");
+        assertEq(units, 0, "reversalOf units non-zero after failed reversal");
+        // evidenceUsed must also be false.
+        assertFalse(registry.evidenceUsed(REV_EV_1), "evidenceUsed true after failed reversal");
+    }
+
+    // ── reversalOf view ───────────────────────────────────────────────────────
+
+    /// @notice reversalOf returns the correct record after a successful reversal.
+    function test_recordReversal_reversalOf_returnsRecord() public {
+        vm.prank(writer);
+        registry.recordReversal(_id, EVIDENCE_1, 200e6, REV_EV_1);
+
+        (uint256 rid, bytes32 origEv, uint128 units) = registry.reversalOf(REV_EV_1);
+        assertEq(rid, _id, "reversalOf rid mismatch");
+        assertEq(origEv, EVIDENCE_1, "reversalOf origEv mismatch");
+        assertEq(units, 200e6, "reversalOf units mismatch");
+    }
+
+    /// @notice reversalOf returns zeros for an unknown reversal evidence.
+    function test_recordReversal_reversalOf_zeros_unknown() public view {
+        (uint256 rid, bytes32 origEv, uint128 units) = registry.reversalOf(keccak256("unknown-rev"));
+        assertEq(rid, 0);
+        assertEq(origEv, bytes32(0));
+        assertEq(units, 0);
+    }
+
+    /// @notice evidenceUsed is true for a reversal evidence after a successful reversal.
+    function test_recordReversal_evidenceUsed_trueForReversalEvidence() public {
+        assertFalse(registry.evidenceUsed(REV_EV_1));
+        vm.prank(writer);
+        registry.recordReversal(_id, EVIDENCE_1, 100, REV_EV_1);
+        assertTrue(registry.evidenceUsed(REV_EV_1));
     }
 
     // ── Happy path ────────────────────────────────────────────────────────────
 
     function test_recordReversal_partialReversal() public {
         vm.prank(writer);
-        registry.recordReversal(_id, EVIDENCE_1, 200e6, REASON);
+        registry.recordReversal(_id, EVIDENCE_1, 200e6, REV_EV_1);
 
         IDocumentReceivableRegistry.Receivable memory r = registry.receivableOf(_id);
         assertEq(r.paidUnits, PAY_AMOUNT - 200e6);
@@ -729,7 +853,7 @@ contract DocumentReceivableRegistry_RecordReversal is DocumentReceivableBase {
 
     function test_recordReversal_fullReversal_statusOpen() public {
         vm.prank(writer);
-        registry.recordReversal(_id, EVIDENCE_1, PAY_AMOUNT, REASON);
+        registry.recordReversal(_id, EVIDENCE_1, PAY_AMOUNT, REV_EV_1);
 
         IDocumentReceivableRegistry.Receivable memory r = registry.receivableOf(_id);
         assertEq(r.paidUnits, 0);
@@ -744,31 +868,33 @@ contract DocumentReceivableRegistry_RecordReversal is DocumentReceivableBase {
 
         // Partial reversal → PartiallyPaid
         vm.prank(writer);
-        registry.recordReversal(_id, EVIDENCE_1, 1, REASON);
+        registry.recordReversal(_id, EVIDENCE_1, 1, REV_EV_1);
         assertEq(uint8(registry.receivableOf(_id).status), uint8(IDocumentReceivableRegistry.Status.PartiallyPaid));
 
-        // Full reversal of first payment → Open
+        // Full reversal of first payment → PartiallyPaid (second payment still outstanding)
         vm.prank(writer);
-        registry.recordReversal(_id, EVIDENCE_1, PAY_AMOUNT - 1, keccak256("reason-2"));
+        registry.recordReversal(_id, EVIDENCE_1, PAY_AMOUNT - 1, REV_EV_2);
         // paidUnits is now just the second payment = PRINCIPAL - PAY_AMOUNT < PRINCIPAL → PartiallyPaid
         assertEq(uint8(registry.receivableOf(_id).status), uint8(IDocumentReceivableRegistry.Status.PartiallyPaid));
 
         // Now reverse the second payment
         vm.prank(writer);
-        registry.recordReversal(_id, EVIDENCE_2, PRINCIPAL - PAY_AMOUNT, keccak256("reason-3"));
+        registry.recordReversal(_id, EVIDENCE_2, PRINCIPAL - PAY_AMOUNT, REV_EV_3);
         assertEq(uint8(registry.receivableOf(_id).status), uint8(IDocumentReceivableRegistry.Status.Open));
     }
 
     function test_recordReversal_evidenceStillUsedAfterFullReversal() public {
         vm.prank(writer);
-        registry.recordReversal(_id, EVIDENCE_1, PAY_AMOUNT, REASON);
-        // Evidence is still "used" — cannot be re-recorded
+        registry.recordReversal(_id, EVIDENCE_1, PAY_AMOUNT, REV_EV_1);
+        // Payment evidence EVIDENCE_1 is still "used" — cannot be re-recorded.
         assertTrue(registry.evidenceUsed(EVIDENCE_1));
+        // Reversal evidence REV_EV_1 is also "used".
+        assertTrue(registry.evidenceUsed(REV_EV_1));
     }
 
     function test_recordReversal_payAgainAfterFullReversal() public {
         vm.prank(writer);
-        registry.recordReversal(_id, EVIDENCE_1, PAY_AMOUNT, REASON);
+        registry.recordReversal(_id, EVIDENCE_1, PAY_AMOUNT, REV_EV_1);
 
         // Use a DIFFERENT evidence (original cannot be reused)
         vm.prank(writer);
@@ -783,15 +909,15 @@ contract DocumentReceivableRegistry_RecordReversal is DocumentReceivableBase {
 
     function test_recordReversal_emitsEvent() public {
         uint128 paidAfter = PAY_AMOUNT - 100;
-        vm.expectEmit(true, true, false, true);
-        emit IDocumentReceivableRegistry.ReversalRecorded(_id, EVIDENCE_1, 100, paidAfter, REASON);
+        vm.expectEmit(true, true, true, true);
+        emit IDocumentReceivableRegistry.ReversalRecorded(_id, EVIDENCE_1, REV_EV_1, 100, paidAfter);
         vm.prank(writer);
-        registry.recordReversal(_id, EVIDENCE_1, 100, REASON);
+        registry.recordReversal(_id, EVIDENCE_1, 100, REV_EV_1);
     }
 
     function test_recordReversal_updatesPaymentOf() public {
         vm.prank(writer);
-        registry.recordReversal(_id, EVIDENCE_1, 200e6, REASON);
+        registry.recordReversal(_id, EVIDENCE_1, 200e6, REV_EV_1);
 
         (, uint128 applied, uint128 reversed) = registry.paymentOf(EVIDENCE_1);
         assertEq(applied, PAY_AMOUNT);
@@ -907,7 +1033,7 @@ contract DocumentReceivableRegistry_AmendTerms is DocumentReceivableBase {
 
         // Reverse → goes back to PartiallyPaid or Open
         vm.prank(writer);
-        registry.recordReversal(_id, EVIDENCE_1, PRINCIPAL, REASON);
+        registry.recordReversal(_id, EVIDENCE_1, PRINCIPAL, REV_EV_1);
 
         vm.prank(writer);
         registry.amendTerms(_id, TERMS_V2, 2, AUTH);
@@ -1011,7 +1137,7 @@ contract DocumentReceivableRegistry_NoValue is DocumentReceivableBase {
 
         IDocumentReceivableRegistry.Receivable memory before = registry.receivableOf(id);
         bytes memory data =
-            abi.encodeWithSelector(registry.recordReversal.selector, id, EVIDENCE_1, uint128(50), REASON);
+            abi.encodeWithSelector(registry.recordReversal.selector, id, EVIDENCE_1, uint128(50), REV_EV_1);
         vm.deal(writer, 1 ether);
         vm.prank(writer);
         (bool ok,) = address(registry).call{value: 1 ether}(data);
@@ -1021,6 +1147,10 @@ contract DocumentReceivableRegistry_NoValue is DocumentReceivableBase {
         IDocumentReceivableRegistry.Receivable memory after_ = registry.receivableOf(id);
         assertEq(after_.paidUnits, before.paidUnits, "paidUnits changed");
         assertEq(after_.reversedUnits, before.reversedUnits, "reversedUnits changed");
+        // reversalOf and evidenceUsed for REV_EV_1 must also be unchanged (zeros / false).
+        (uint256 rrid,,) = registry.reversalOf(REV_EV_1);
+        assertEq(rrid, 0, "reversalOf changed after failed reversal-with-value");
+        assertFalse(registry.evidenceUsed(REV_EV_1), "evidenceUsed changed after failed reversal-with-value");
     }
 
     function test_noValue_amendTermsWithValueReverts() public {
@@ -1109,13 +1239,13 @@ contract DocumentReceivableRegistry_Fuzz is DocumentReceivableBase {
         rev1 = uint128(bound(rev1, 0, p1));
         if (rev1 > 0) {
             vm.prank(writer);
-            registry.recordReversal(id, EVIDENCE_1, rev1, REASON);
+            registry.recordReversal(id, EVIDENCE_1, rev1, REV_EV_1);
         }
 
         rev2 = uint128(bound(rev2, 0, p2));
         if (rev2 > 0) {
             vm.prank(writer);
-            registry.recordReversal(id, EVIDENCE_2, rev2, keccak256("reason-2"));
+            registry.recordReversal(id, EVIDENCE_2, rev2, REV_EV_2);
         }
 
         r = registry.receivableOf(id);
@@ -1225,6 +1355,7 @@ contract DocumentReceivableRegistry_Fuzz is DocumentReceivableBase {
 
         SeqMirror memory m;
         m.evidenceNonce = 1234;
+        m.id_ = id;
 
         for (uint256 i = 0; i < ops.length; i++) {
             _seqStep(id, principal, ops[i], m);
@@ -1246,6 +1377,12 @@ contract DocumentReceivableRegistry_Fuzz is DocumentReceivableBase {
         uint128[24] evReversed;
         uint256 evCount;
         uint256 evidenceNonce;
+        // Reversal evidence tracking (one per reversal op, at most ops.length = 24)
+        bytes32[24] revEvidences;
+        bytes32[24] revOriginalEvidences;
+        uint128[24] revUnits;
+        uint256 id_; // receivable id (set once)
+        uint256 revCount;
     }
 
     function _seqStep(uint256 id, uint128 principal, uint256 op, SeqMirror memory m) internal {
@@ -1271,14 +1408,21 @@ contract DocumentReceivableRegistry_Fuzz is DocumentReceivableBase {
             m.evCount++;
             m.gross += amount;
         } else if (kind == 1) {
-            // REVERSE
+            // REVERSE — use a fresh reversal evidence (unique per call)
             if (m.evCount == 0) return;
+            if (m.revCount >= m.revEvidences.length) return; // no more slots
             uint256 pick = op % m.evCount;
             uint128 reversible = m.evApplied[pick] - m.evReversed[pick];
             if (reversible == 0) return;
             uint128 rev = uint128(bound(amount, 1, reversible));
+            bytes32 revEv = keccak256(abi.encodePacked("fuzz-rev", m.evidenceNonce++));
             vm.prank(writer);
-            registry.recordReversal(id, m.evidences[pick], rev, REASON);
+            registry.recordReversal(id, m.evidences[pick], rev, revEv);
+            // Mirror: record the reversal evidence.
+            m.revEvidences[m.revCount] = revEv;
+            m.revOriginalEvidences[m.revCount] = m.evidences[pick];
+            m.revUnits[m.revCount] = rev;
+            m.revCount++;
             m.evReversed[pick] += rev;
             m.reversed += rev;
         } else {
@@ -1309,12 +1453,20 @@ contract DocumentReceivableRegistry_Fuzz is DocumentReceivableBase {
         assertLe(r.paidUnits, r.principal, "paid > principal");
         assertEq(uint8(r.status), uint8(_expectedStatus(r.paidUnits, r.principal)), "status wrong");
         assertEq(registry.outstandingUnits(id), r.principal - r.paidUnits, "outstanding wrong");
-        // paymentOf for every evidence.
+        // paymentOf for every payment evidence.
         for (uint256 j = 0; j < m.evCount; j++) {
             (uint256 rid, uint128 app, uint128 rev) = registry.paymentOf(m.evidences[j]);
             assertEq(rid, id, "paymentOf rid wrong");
             assertEq(app, m.evApplied[j], "paymentOf applied wrong");
             assertEq(rev, m.evReversed[j], "paymentOf reversed wrong");
+        }
+        // reversalOf for every reversal evidence.
+        for (uint256 k = 0; k < m.revCount; k++) {
+            (uint256 rrid, bytes32 origEv, uint128 runits) = registry.reversalOf(m.revEvidences[k]);
+            assertEq(rrid, id, "reversalOf rid wrong");
+            assertEq(origEv, m.revOriginalEvidences[k], "reversalOf origEv wrong");
+            assertEq(runits, m.revUnits[k], "reversalOf units wrong");
+            assertTrue(registry.evidenceUsed(m.revEvidences[k]), "reversal evidence not marked used");
         }
         assertEq(principal, r.principal, "principal changed");
     }

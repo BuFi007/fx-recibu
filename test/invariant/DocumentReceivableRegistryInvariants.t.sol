@@ -22,6 +22,9 @@ import {IDocumentReceivableRegistry} from "../../src/interfaces/IDocumentReceiva
 ///         C4: termsHash history + ghostAmends counter.
 ///         C5: adversarial attack() action — any unexpected success counted.
 ///         C6: ghostUnPaid counter for reversals that move a receivable out of Paid.
+///         reversal: ghost per reversalEvidence (owner, originalEvidence, units);
+///                   disjoint invariant: payment-evidence set and reversal-evidence
+///                   set are disjoint; sum of reversalOf units per id == reversedUnits.
 contract DRRHandler is Test {
     // ── registry under test ───────────────────────────────────────────────────
     DocumentReceivableRegistry internal registry;
@@ -48,14 +51,24 @@ contract DRRHandler is Test {
     mapping(uint256 => uint128) public ghostGrossApplied;
     mapping(uint256 => uint128) public ghostReversedById;
 
-    // ── ghost: per-evidence applied & reversed (C2) ───────────────────────────
+    // ── ghost: per-payment-evidence applied & reversed (C2) ───────────────────
     mapping(bytes32 => uint128) public ghostEvidenceApplied;
     mapping(bytes32 => uint128) public ghostEvidenceReversed;
     mapping(bytes32 => uint256) public ghostEvidenceOwner; // C2: receivableId that owns the evidence
 
-    // ── ghost: used evidence set ──────────────────────────────────────────────
-    bytes32[] internal _allEvidences;
-    mapping(bytes32 => bool) internal _evidenceUsed;
+    // ── ghost: used payment-evidence set ──────────────────────────────────────
+    bytes32[] internal _allPaymentEvidences;
+    mapping(bytes32 => bool) internal _paymentEvidenceUsed;
+
+    // ── ghost: per-reversalEvidence record ────────────────────────────────────
+    bytes32[] internal _allReversalEvidences;
+    mapping(bytes32 => uint256) public ghostReversalEvidenceOwner; // receivableId
+    mapping(bytes32 => bytes32) public ghostReversalEvidenceOriginal; // originalEvidence
+    mapping(bytes32 => uint128) public ghostReversalEvidenceUnits; // units reversed
+    mapping(bytes32 => bool) internal _reversalEvidenceUsed;
+
+    // ── ghost: sum of reversalOf units per id (for disjoint invariant) ────────
+    mapping(uint256 => uint128) public ghostReversalUnitSumById;
 
     // ── ghost: per-id original terms hash (C4) ────────────────────────────────
     mapping(uint256 => bytes32) public ghostOriginalTermsHash;
@@ -133,15 +146,15 @@ contract DRRHandler is Test {
 
         // Update ghosts.
         _evidences[id].push(evidence);
-        _allEvidences.push(evidence);
-        _evidenceUsed[evidence] = true;
+        _allPaymentEvidences.push(evidence);
+        _paymentEvidenceUsed[evidence] = true;
         ghostGrossApplied[id] += amount;
         ghostEvidenceApplied[evidence] = amount;
         ghostEvidenceOwner[evidence] = id; // C2
         ghostPayments++;
     }
 
-    /// @dev Record a reversal on a previously recorded payment.
+    /// @dev Record a reversal on a previously recorded payment using a FRESH reversal evidence.
     function recordReversal(uint256 idSeed, uint256 evidenceSeed, uint128 units) external {
         if (_ids.length == 0) return;
 
@@ -149,25 +162,39 @@ contract DRRHandler is Test {
         bytes32[] storage evs = _evidences[id];
         if (evs.length == 0) return;
 
-        bytes32 evidence = evs[evidenceSeed % evs.length];
-        uint128 reversible = ghostEvidenceApplied[evidence] - ghostEvidenceReversed[evidence];
+        bytes32 originalEvidence = evs[evidenceSeed % evs.length];
+        uint128 reversible = ghostEvidenceApplied[originalEvidence] - ghostEvidenceReversed[originalEvidence];
         if (reversible == 0) return;
 
         units = uint128(bound(units, 1, reversible));
 
+        // Fresh reversal evidence — unique, not in payment-evidence namespace.
+        _evidenceNonce++;
+        bytes32 revEvidence = keccak256(abi.encodePacked("rev-ev", _evidenceNonce));
+
         // Check if receivable is currently Paid (for C6 counter).
         bool wasPaid = registry.receivableOf(id).status == IDocumentReceivableRegistry.Status.Paid;
 
-        registry.recordReversal(id, evidence, units, keccak256(abi.encodePacked("reason", _evidenceNonce)));
+        registry.recordReversal(id, originalEvidence, units, revEvidence);
 
         // C6: count reversals that moved a Paid receivable out of Paid.
         if (wasPaid && registry.receivableOf(id).status != IDocumentReceivableRegistry.Status.Paid) {
             ghostUnPaid++;
         }
 
-        // Update ghosts.
+        // Update payment-evidence ghost (reversedUnits on original evidence).
+        ghostEvidenceReversed[originalEvidence] += units;
+
+        // Update reversal-evidence ghosts.
+        _allReversalEvidences.push(revEvidence);
+        _reversalEvidenceUsed[revEvidence] = true;
+        ghostReversalEvidenceOwner[revEvidence] = id;
+        ghostReversalEvidenceOriginal[revEvidence] = originalEvidence;
+        ghostReversalEvidenceUnits[revEvidence] = units;
+
+        // Update per-id reversal mirrors.
         ghostReversedById[id] += units;
-        ghostEvidenceReversed[evidence] += units;
+        ghostReversalUnitSumById[id] += units;
         ghostReversals++;
     }
 
@@ -190,10 +217,12 @@ contract DRRHandler is Test {
 
     /// @dev Adversarial action (C5): try operations that MUST revert.
     ///      Uses try/catch — any call that does NOT revert increments ghostUnexpectedSuccess.
+    ///      For overpayment (kind 2): also checks the revert selector is Overpayment.
+    ///      For reversal-evidence reuse (kinds 8, 9, 10): checks selector is EvidenceAlreadyUsed.
     function attack(uint256 seed) external {
         ghostAttacks++;
 
-        uint8 kind = uint8(seed % 8);
+        uint8 kind = uint8(seed % 11);
 
         if (kind == 0) {
             // Duplicate register of an existing documentCommitment.
@@ -216,29 +245,24 @@ contract DRRHandler is Test {
                 ghostUnexpectedSuccess++;
             } catch {}
         } else if (kind == 1) {
-            // Reuse an existing evidence on a different id.
-            if (_allEvidences.length == 0 || _ids.length < 2) return;
-            bytes32 ev = _allEvidences[seed % _allEvidences.length];
-            uint256 ownerIdx = (seed >> 8) % _ids.length;
-            uint256 otherId = _ids[ownerIdx];
-            // Pick any id — may or may not be the owner, both should revert.
-            _evidenceNonce++;
-            bytes32 freshEv = keccak256(abi.encodePacked("attack-ev", _evidenceNonce));
-            // Use the existing evidence (must fail EvidenceAlreadyUsed).
+            // Reuse an existing payment evidence on any id.
+            if (_allPaymentEvidences.length == 0 || _ids.length == 0) return;
+            bytes32 ev = _allPaymentEvidences[seed % _allPaymentEvidences.length];
+            uint256 otherId = _ids[(seed >> 8) % _ids.length];
             try registry.recordPayment(otherId, 1, 1, ev, keccak256("legs")) {
                 ghostUnexpectedSuccess++;
             } catch {}
-            // Use fresh evidence on id 0 (must fail UnknownReceivable).
+            // Also try id=0 (must fail UnknownReceivable).
+            _evidenceNonce++;
+            bytes32 freshEv = keccak256(abi.encodePacked("attack-ev", _evidenceNonce));
             try registry.recordPayment(0, 1, 1, freshEv, keccak256("legs")) {
                 ghostUnexpectedSuccess++;
             } catch {}
         } else if (kind == 2) {
-            // Overpay.
+            // Overpay — must revert with exactly Overpayment selector.
             if (_ids.length == 0) return;
             uint256 id = _ids[seed % _ids.length];
             IDocumentReceivableRegistry.Receivable memory r = registry.receivableOf(id);
-            // Exactly one unit past the REMAINING capacity (not past principal), so a
-            // check that compared against principal instead of remaining would be caught.
             uint128 overpay = (r.principal - r.paidUnits) + 1;
             _evidenceNonce++;
             bytes32 freshEv = keccak256(abi.encodePacked("ov-ev", _evidenceNonce));
@@ -249,22 +273,26 @@ contract DRRHandler is Test {
             }
         } else if (kind == 3) {
             // Reverse evidence on the wrong id.
-            if (_allEvidences.length == 0 || _ids.length < 2) return;
-            bytes32 ev = _allEvidences[seed % _allEvidences.length];
+            if (_allPaymentEvidences.length == 0 || _ids.length < 2) return;
+            bytes32 ev = _allPaymentEvidences[seed % _allPaymentEvidences.length];
             (uint256 ownerId,,) = registry.paymentOf(ev);
             uint256 wrongId = _ids[(seed >> 4) % _ids.length];
             if (wrongId == ownerId) return;
-            try registry.recordReversal(wrongId, ev, 1, keccak256("reason")) {
+            _evidenceNonce++;
+            bytes32 freshRevEv = keccak256(abi.encodePacked("att-rev", _evidenceNonce));
+            try registry.recordReversal(wrongId, ev, 1, freshRevEv) {
                 ghostUnexpectedSuccess++;
             } catch {}
         } else if (kind == 4) {
             // Reverse more than reversible.
-            if (_allEvidences.length == 0) return;
-            bytes32 ev = _allEvidences[seed % _allEvidences.length];
+            if (_allPaymentEvidences.length == 0) return;
+            bytes32 ev = _allPaymentEvidences[seed % _allPaymentEvidences.length];
             (uint256 ownerId, uint128 applied, uint128 alreadyRev) = registry.paymentOf(ev);
             if (ownerId == 0) return;
             uint128 excess = applied - alreadyRev + 1;
-            try registry.recordReversal(ownerId, ev, excess, keccak256("reason")) {
+            _evidenceNonce++;
+            bytes32 freshRevEv = keccak256(abi.encodePacked("att-rev-exc", _evidenceNonce));
+            try registry.recordReversal(ownerId, ev, excess, freshRevEv) {
                 ghostUnexpectedSuccess++;
             } catch {}
         } else if (kind == 5) {
@@ -285,7 +313,7 @@ contract DRRHandler is Test {
             try registry.amendTerms(id, keccak256("t"), r.termsVersion + 1, keccak256("a")) {
                 ghostUnexpectedSuccess++;
             } catch {}
-        } else {
+        } else if (kind == 7) {
             // Write from a non-writer address.
             if (_ids.length == 0) return;
             uint256 id = _ids[seed % _ids.length];
@@ -295,6 +323,50 @@ contract DRRHandler is Test {
             try registry.recordPayment(id, 1, 1, freshEv, keccak256("legs")) {
                 ghostUnexpectedSuccess++;
             } catch {}
+        } else if (kind == 8) {
+            // Replay an existing reversalEvidence — must revert EvidenceAlreadyUsed.
+            if (_allReversalEvidences.length == 0 || _allPaymentEvidences.length == 0) return;
+            bytes32 revEv = _allReversalEvidences[seed % _allReversalEvidences.length];
+            // Pick any id and any payment evidence to attempt the reversal against.
+            bytes32 payEv = _allPaymentEvidences[(seed >> 8) % _allPaymentEvidences.length];
+            (uint256 ownerId,,) = registry.paymentOf(payEv);
+            if (ownerId == 0) return;
+            try registry.recordReversal(ownerId, payEv, 1, revEv) {
+                ghostUnexpectedSuccess++;
+            } catch (bytes memory err) {
+                if (bytes4(err) != IDocumentReceivableRegistry.EvidenceAlreadyUsed.selector) {
+                    ghostUnexpectedSuccess++;
+                }
+            }
+        } else if (kind == 9) {
+            // Use an existing payment evidence AS reversalEvidence — must revert EvidenceAlreadyUsed.
+            if (_allPaymentEvidences.length == 0) return;
+            bytes32 payEvAsRevEv = _allPaymentEvidences[seed % _allPaymentEvidences.length];
+            // Pick a different payment evidence as the originalEvidence.
+            if (_allPaymentEvidences.length < 2) return;
+            bytes32 origEv = _allPaymentEvidences[(seed >> 8) % _allPaymentEvidences.length];
+            if (origEv == payEvAsRevEv) return;
+            (uint256 ownerId,,) = registry.paymentOf(origEv);
+            if (ownerId == 0) return;
+            try registry.recordReversal(ownerId, origEv, 1, payEvAsRevEv) {
+                ghostUnexpectedSuccess++;
+            } catch (bytes memory err) {
+                if (bytes4(err) != IDocumentReceivableRegistry.EvidenceAlreadyUsed.selector) {
+                    ghostUnexpectedSuccess++;
+                }
+            }
+        } else {
+            // kind == 10: recordPayment using an existing reversalEvidence — must revert EvidenceAlreadyUsed.
+            if (_allReversalEvidences.length == 0 || _ids.length == 0) return;
+            bytes32 revEvAsPayEv = _allReversalEvidences[seed % _allReversalEvidences.length];
+            uint256 id = _ids[(seed >> 8) % _ids.length];
+            try registry.recordPayment(id, 1, 1, revEvAsPayEv, keccak256("legs")) {
+                ghostUnexpectedSuccess++;
+            } catch (bytes memory err) {
+                if (bytes4(err) != IDocumentReceivableRegistry.EvidenceAlreadyUsed.selector) {
+                    ghostUnexpectedSuccess++;
+                }
+            }
         }
     }
 
@@ -310,12 +382,20 @@ contract DRRHandler is Test {
         return _ids[index];
     }
 
-    function allEvidences(uint256 index) external view returns (bytes32) {
-        return _allEvidences[index];
+    function allPaymentEvidences(uint256 index) external view returns (bytes32) {
+        return _allPaymentEvidences[index];
     }
 
-    function allEvidencesLength() external view returns (uint256) {
-        return _allEvidences.length;
+    function allPaymentEvidencesLength() external view returns (uint256) {
+        return _allPaymentEvidences.length;
+    }
+
+    function allReversalEvidences(uint256 index) external view returns (bytes32) {
+        return _allReversalEvidences[index];
+    }
+
+    function allReversalEvidencesLength() external view returns (uint256) {
+        return _allReversalEvidences.length;
     }
 }
 
@@ -431,11 +511,11 @@ contract DocumentReceivableRegistryInvariants is StdInvariant, Test {
         }
     }
 
-    /// @notice Per-evidence: reversedUnits <= appliedUnits.
+    /// @notice Per-payment-evidence: reversedUnits <= appliedUnits.
     function invariant_evidenceReversedNeverExceedsApplied() public view {
-        uint256 evLen = handler.allEvidencesLength();
+        uint256 evLen = handler.allPaymentEvidencesLength();
         for (uint256 i = 0; i < evLen; i++) {
-            bytes32 ev = handler.allEvidences(i);
+            bytes32 ev = handler.allPaymentEvidences(i);
             (, uint128 applied, uint128 reversed) = registry.paymentOf(ev);
             assertLe(reversed, applied, "evidence reversed > applied");
         }
@@ -453,16 +533,16 @@ contract DocumentReceivableRegistryInvariants is StdInvariant, Test {
         }
     }
 
-    /// @notice C2: For every evidence paymentOf matches ghost and evidenceUsed is true.
+    /// @notice C2: For every payment evidence paymentOf matches ghost and evidenceUsed is true.
     function invariant_evidenceOwnership() public view {
-        uint256 evLen = handler.allEvidencesLength();
+        uint256 evLen = handler.allPaymentEvidencesLength();
         for (uint256 i = 0; i < evLen; i++) {
-            bytes32 ev = handler.allEvidences(i);
+            bytes32 ev = handler.allPaymentEvidences(i);
             (uint256 rid, uint128 applied, uint128 reversed) = registry.paymentOf(ev);
             assertEq(rid, handler.ghostEvidenceOwner(ev), "C2: owner mismatch");
             assertEq(applied, handler.ghostEvidenceApplied(ev), "C2: applied mismatch");
             assertEq(reversed, handler.ghostEvidenceReversed(ev), "C2: reversed mismatch");
-            assertTrue(registry.evidenceUsed(ev), "C2: evidenceUsed false");
+            assertTrue(registry.evidenceUsed(ev), "C2: evidenceUsed false for payment ev");
         }
     }
 
@@ -502,6 +582,44 @@ contract DocumentReceivableRegistryInvariants is StdInvariant, Test {
     /// @notice C5: No adversarial call unexpectedly succeeded.
     function invariant_noAdversarialSuccess() public view {
         assertEq(handler.ghostUnexpectedSuccess(), 0, "C5: adversarial call succeeded unexpectedly");
+    }
+
+    /// @notice Reversal-evidence ghost: reversalOf matches ghost for every reversal evidence;
+    ///         evidenceUsed is true; payment-evidence set and reversal-evidence set are DISJOINT
+    ///         (paymentOf(revEv).receivableId == 0, reversalOf(payEv).receivableId == 0);
+    ///         sum of reversalOf units per id == reversedUnits.
+    function invariant_reversalEvidenceGhostAndDisjoint() public view {
+        uint256 revLen = handler.allReversalEvidencesLength();
+        for (uint256 i = 0; i < revLen; i++) {
+            bytes32 revEv = handler.allReversalEvidences(i);
+
+            // reversalOf matches ghost.
+            (uint256 rid, bytes32 origEv, uint128 units) = registry.reversalOf(revEv);
+            assertEq(rid, handler.ghostReversalEvidenceOwner(revEv), "revGhost: rid mismatch");
+            assertEq(origEv, handler.ghostReversalEvidenceOriginal(revEv), "revGhost: origEv mismatch");
+            assertEq(units, handler.ghostReversalEvidenceUnits(revEv), "revGhost: units mismatch");
+            assertTrue(registry.evidenceUsed(revEv), "revGhost: evidenceUsed false");
+
+            // Disjoint: a reversal evidence is NOT a payment evidence.
+            (uint256 payRid,,) = registry.paymentOf(revEv);
+            assertEq(payRid, 0, "disjoint: revEv is also a paymentEvidence");
+        }
+
+        // Disjoint: a payment evidence is NOT a reversal evidence.
+        uint256 payLen = handler.allPaymentEvidencesLength();
+        for (uint256 j = 0; j < payLen; j++) {
+            bytes32 payEv = handler.allPaymentEvidences(j);
+            (uint256 revRid,,) = registry.reversalOf(payEv);
+            assertEq(revRid, 0, "disjoint: payEv is also a reversalEvidence");
+        }
+
+        // Sum of reversalOf units per id == reversedUnits on the receivable.
+        uint256 count = handler.idCount();
+        for (uint256 k = 0; k < count; k++) {
+            uint256 id = handler.idAt(k);
+            IDocumentReceivableRegistry.Receivable memory r = registry.receivableOf(id);
+            assertEq(handler.ghostReversalUnitSumById(id), r.reversedUnits, "revGhost: unitSum != reversedUnits");
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

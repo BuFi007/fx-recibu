@@ -108,7 +108,11 @@ interface IDocumentReceivableRegistry {
 
     /// @notice Emitted when a payment is reversed.
     event ReversalRecorded(
-        uint256 indexed id, bytes32 indexed originalEvidence, uint128 units, uint128 paidUnitsAfter, bytes32 reasonHash
+        uint256 indexed id,
+        bytes32 indexed originalEvidence,
+        bytes32 indexed reversalEvidence,
+        uint128 units,
+        uint128 paidUnitsAfter
     );
 
     /// @notice Emitted when the terms of a receivable are amended.
@@ -132,7 +136,7 @@ interface IDocumentReceivableRegistry {
 
     /// @notice A required `bytes32` field was zero. `field` encodes which one:
     ///         0 = debtorCommitment, 1 = unit, 2 = termsHash, 3 = destinationDigest,
-    ///         4 = evidenceCommitment, 5 = legsRoot, 6 = reasonHash, 7 = authorizationHash,
+    ///         4 = evidenceCommitment, 5 = legsRoot, 6 = reversalEvidence, 7 = authorizationHash,
     ///         8 = newTermsHash.
     error ZeroField(uint8 field);
 
@@ -205,8 +209,10 @@ interface IDocumentReceivableRegistry {
     /// @param id               Receivable id.
     /// @param originalEvidence Evidence commitment of the payment being reversed.
     /// @param units            Units to reverse (≤ applied − already reversed).
-    /// @param reasonHash       Hash of the reversal justification document.
-    function recordReversal(uint256 id, bytes32 originalEvidence, uint128 units, bytes32 reasonHash) external;
+    /// @param reversalEvidence Single-use commitment that identifies this reversal document.
+    ///                         Must be non-zero and unused in the global evidence namespace
+    ///                         (shared with payment evidences).
+    function recordReversal(uint256 id, bytes32 originalEvidence, uint128 units, bytes32 reversalEvidence) external;
 
     /// @notice Amend the terms of a receivable (strictly versioned).
     /// @param id                Receivable id.
@@ -226,7 +232,8 @@ interface IDocumentReceivableRegistry {
     /// @notice Returns the receivable id for a document commitment, or 0 if not registered.
     function idOfCommitment(bytes32 documentCommitment) external view returns (uint256);
 
-    /// @notice Returns true if `evidence` has been used in a payment record.
+    /// @notice Returns true if `evidence` has been used — either as a payment evidence
+    ///         or as a reversal evidence.  The global namespace is shared.
     function evidenceUsed(bytes32 evidence) external view returns (bool);
 
     /// @notice Returns the payment record for `evidence`.
@@ -235,6 +242,13 @@ interface IDocumentReceivableRegistry {
         external
         view
         returns (uint256 receivableId, uint128 appliedUnits, uint128 reversedUnits);
+
+    /// @notice Returns the reversal record for `reversalEvidence`.
+    ///         Returns (0, bytes32(0), 0) if the reversal evidence is unknown.
+    function reversalOf(bytes32 reversalEvidence)
+        external
+        view
+        returns (uint256 receivableId, bytes32 originalEvidence, uint128 units);
 
     /// @notice Returns `principal - paidUnits` for `id`, or 0 for an unknown id.
     function outstandingUnits(uint256 id) external view returns (uint128);
